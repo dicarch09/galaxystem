@@ -156,6 +156,11 @@ impl MountTable {
         })
     }
 
+    /// All entries, in file order.
+    pub fn entries(&self) -> &[MountEntry] {
+        &self.entries
+    }
+
     /// Entry with mount id `id`.
     pub fn get(&self, id: u64) -> Option<&MountEntry> {
         self.by_id.get(&id).map(|&i| &self.entries[i])

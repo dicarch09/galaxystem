@@ -4,8 +4,10 @@
 
 //! Filesystem scanner (F0-diseno.md §2).
 //!
-//! F0.1 provides the single-threaded walk of §2.1 with the boundaries of
-//! §2.4, hard links (§2.5), errors (§2.6) and progress (§2.7). Symlinks are
+//! Two implementations share the boundaries of §2.4, hard links (§2.5),
+//! errors (§2.6) and progress (§2.7): the single-threaded walk of §2.1
+//! ([`ScanMode::Sequential`], the reference for equivalence tests) and the
+//! parallel scanner of §2.2–§2.3 ([`ScanMode::Parallel`]). Symlinks are
 //! never followed: directories are opened with `openat2` and
 //! `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`, entries are inspected with
 //! `statx(AT_SYMLINK_NOFOLLOW)`.
@@ -17,6 +19,7 @@
 
 pub mod fsmagic;
 pub mod mountinfo;
+mod par;
 #[allow(unsafe_code)]
 mod sys;
 mod walk;
@@ -28,9 +31,80 @@ use gx_arena::{Arena, ArenaError, DEFAULT_NODE_CAPACITY, NodeId};
 
 pub use sys::{SubvolInfo, btrfs_subvol_info};
 
+/// Scanner implementation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanMode {
+    /// One thread, breadth-first (F0.1). Reference for equivalence tests.
+    Sequential,
+    /// One work-stealing thread pool per filesystem (F0-diseno.md §2.2).
+    #[default]
+    Parallel,
+}
+
+/// Threads per filesystem pool in [`ScanMode::Parallel`] (F0-diseno.md
+/// §2.2). Pools start with one thread and grow up to these limits while
+/// there is queued work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThreadPolicy {
+    /// Non-rotational disks (`rotational = 0`).
+    pub ssd: usize,
+    /// Rotational disks (`rotational = 1`).
+    pub hdd: usize,
+    /// Unknown kind (tmpfs, loop devices, …).
+    pub unknown: usize,
+    /// Network filesystems. Capped by [`ScanOptions::max_abandoned`]: each
+    /// thread abandons at most one blocked helper.
+    pub network: usize,
+}
+
+impl ThreadPolicy {
+    /// The same number of threads for every kind of filesystem.
+    pub fn uniform(threads: usize) -> Self {
+        ThreadPolicy {
+            ssd: threads,
+            hdd: threads,
+            unknown: threads,
+            network: threads,
+        }
+    }
+
+    /// Threads for a local filesystem with the given rotational flag
+    /// (0, 1, or 2 if unknown).
+    pub fn for_rotational(&self, rotational: u8) -> usize {
+        match rotational {
+            0 => self.ssd,
+            1 => self.hdd,
+            _ => self.unknown,
+        }
+    }
+}
+
+impl Default for ThreadPolicy {
+    fn default() -> Self {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        ThreadPolicy {
+            ssd: (cores * 2).min(32),
+            hdd: 2,
+            unknown: cores,
+            network: 4,
+        }
+    }
+}
+
 /// Scanner configuration.
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
+    /// Implementation to use.
+    pub mode: ScanMode,
+    /// Threads per pool ([`ScanMode::Parallel`] only).
+    pub threads: ThreadPolicy,
+    /// Maximum time to read one directory of a network filesystem before
+    /// marking it `STALE` ([`ScanMode::Parallel`] only).
+    pub net_timeout: Duration,
+    /// Maximum helper threads abandoned per network mount
+    /// ([`ScanMode::Parallel`] only). Once reached, the rest of the mount is
+    /// marked `STALE` without touching it.
+    pub max_abandoned: u32,
     /// Requested node capacity (the arena may fall back to less).
     pub node_capacity: u32,
     /// Size of the `getdents64` buffer.
@@ -44,6 +118,10 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         ScanOptions {
+            mode: ScanMode::default(),
+            threads: ThreadPolicy::default(),
+            net_timeout: Duration::from_secs(5),
+            max_abandoned: 4,
             node_capacity: DEFAULT_NODE_CAPACITY,
             getdents_buffer: 256 * 1024,
             progress_interval: Duration::from_millis(50),
@@ -112,6 +190,13 @@ pub struct ScanStats {
     pub pseudo_fs: u64,
     /// Nodes marked `BIND_ALIAS`.
     pub bind_aliases: u64,
+    /// Directories of network filesystems marked `STALE` because they did
+    /// not answer in time (or their mount had too many abandoned threads).
+    pub timed_out: u64,
+    /// Helper threads abandoned while blocked on a network filesystem.
+    pub abandoned_threads: u64,
+    /// Scanner threads started (1 in [`ScanMode::Sequential`]).
+    pub threads: u64,
     /// Total time.
     pub elapsed: Duration,
     /// Time until 10 000 nodes were indexed, if reached.
@@ -142,6 +227,9 @@ pub enum ScanError {
     /// The arena could not be reserved or ran out of capacity.
     #[error("arena: {0}")]
     Arena(#[from] ArenaError),
+    /// No scanner thread could be started.
+    #[error("cannot start scanner threads: {0}")]
+    Spawn(std::io::Error),
 }
 
 /// Scans `root` and returns the arena (F0-diseno.md §8).
@@ -155,5 +243,8 @@ pub fn scan_with_stats(
     opts: &ScanOptions,
     progress: &dyn Progress,
 ) -> Result<(Arena, ScanStats), ScanError> {
-    walk::run(root, opts, progress)
+    match opts.mode {
+        ScanMode::Sequential => walk::run(root, opts, progress),
+        ScanMode::Parallel => par::run(root, opts, progress),
+    }
 }

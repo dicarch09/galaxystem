@@ -19,7 +19,7 @@ use rustix::io::Errno;
 use crate::mountinfo::MountTable;
 use crate::{Progress, ScanError, ScanErrorRecord, ScanOptions, ScanStats, fsmagic, sys};
 
-const MASK: StatxFlags = StatxFlags::TYPE
+pub(crate) const MASK: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::MODE)
     .union(StatxFlags::NLINK)
     .union(StatxFlags::UID)
@@ -30,8 +30,8 @@ const MASK: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::BLOCKS)
     .union(StatxFlags::MNT_ID);
 
-const FIRST_NODES_MILESTONE: u32 = 10_000;
-const BTRFS_SUBVOL_INO: u64 = 256;
+pub(crate) const FIRST_NODES_MILESTONE: u32 = 10_000;
+pub(crate) const BTRFS_SUBVOL_INO: u64 = 256;
 
 /// A directory waiting to be listed.
 #[derive(Clone, Copy)]
@@ -89,11 +89,11 @@ struct Walker<'a> {
     cache: LocalCache,
 }
 
-fn devnum(s: &Statx) -> u64 {
+pub(crate) fn devnum(s: &Statx) -> u64 {
     rustix::fs::makedev(s.stx_dev_major, s.stx_dev_minor)
 }
 
-fn type_flags(ft: FileType) -> Flags {
+pub(crate) fn type_flags(ft: FileType) -> Flags {
     match ft {
         FileType::Directory => Flags::DIR,
         FileType::Symlink => Flags::SYMLINK,
@@ -104,18 +104,18 @@ fn type_flags(ft: FileType) -> Flags {
 
 /// Apparent size as GNU `du --apparent-size` counts it: `st_size` only for
 /// regular files and symlinks, 0 for directories and special files.
-fn apparent(s: &Statx) -> u64 {
+pub(crate) fn apparent(s: &Statx) -> u64 {
     match FileType::from_raw_mode(s.stx_mode.into()) {
         FileType::RegularFile | FileType::Symlink => s.stx_size,
         _ => 0,
     }
 }
 
-fn mtime(s: &Statx) -> u32 {
+pub(crate) fn mtime(s: &Statx) -> u32 {
     s.stx_mtime.tv_sec.clamp(0, i64::from(u32::MAX)) as u32
 }
 
-fn raise_nofile_limit() {
+pub(crate) fn raise_nofile_limit() {
     let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
     if limit.maximum.is_some() && limit.current != limit.maximum {
         let _ = rustix::process::setrlimit(
@@ -157,6 +157,7 @@ pub(crate) fn run(
         stats: ScanStats {
             root_path: root_bytes.clone(),
             node_capacity: b.node_capacity(),
+            threads: 1,
             ..ScanStats::default()
         },
         b,
