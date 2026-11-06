@@ -1,0 +1,42 @@
+# cargo-deny policy for the Galaxystem workspace.
+# Allowed licenses follow docs/F0-diseno.md §9 (all compatible with MPL-2.0).
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The allow list is a policy, not an inventory: do not warn about entries
+# that no current dependency uses.
+unused-allowed-license = "allow"
+
+[licenses.private]
+# Our own unpublished crates are checked too (they must stay MPL-2.0).
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between workspace crates (publish = false) are fine.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
