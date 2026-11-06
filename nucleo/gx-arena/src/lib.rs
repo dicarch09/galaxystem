@@ -22,7 +22,9 @@ mod flags;
 mod tables;
 
 pub use arena::{Arena, InvariantError, MemoryUsage};
-pub use builder::{ArenaBuilder, ArenaError, DEFAULT_NODE_CAPACITY, MIN_NODE_CAPACITY, NodeRecord};
+pub use builder::{
+    ArenaBuilder, ArenaError, DEFAULT_NODE_CAPACITY, LocalCache, MIN_NODE_CAPACITY, NodeRecord,
+};
 pub use class::{Class, MAX_EXTENSION_LEN, extension};
 pub use flags::Flags;
 pub use tables::{Device, DirRow, OWNER_OVERFLOW, SUMMARY_MIN_CHILDREN, Summary};
@@ -65,6 +67,14 @@ fn path_from_chain(
 mod tests {
     use super::*;
 
+    fn add(
+        b: &ArenaBuilder,
+        parent: NodeId,
+        kids: &[NodeRecord<'_>],
+    ) -> Result<std::ops::Range<u32>, ArenaError> {
+        b.add_children(parent, kids, &mut LocalCache::default())
+    }
+
     fn rec(name: &[u8], flags: Flags, disk: u64) -> NodeRecord<'_> {
         NodeRecord {
             name,
@@ -83,20 +93,19 @@ mod tests {
     fn sample() -> Arena {
         let mut b = ArenaBuilder::new(1 << 12).unwrap();
         let root = b.set_root(b"/data", &rec(b"", Flags::DIR, 4096)).unwrap();
-        let kids = b
-            .add_children(
-                root,
-                &[
-                    rec(b"docs", Flags::DIR, 4096),
-                    rec(b"a.PNG", Flags::EMPTY, 1000),
-                    rec(b"dup", Flags::HARDLINK_DUP, 1000),
-                ],
-            )
-            .unwrap();
+        let kids = add(
+            &b,
+            root,
+            &[
+                rec(b"docs", Flags::DIR, 4096),
+                rec(b"a.PNG", Flags::EMPTY, 1000),
+                rec(b"dup", Flags::HARDLINK_DUP, 1000),
+            ],
+        )
+        .unwrap();
         assert_eq!(kids, 1..4);
-        b.add_children(NodeId(1), &[rec(b"x.txt", Flags::EMPTY, 512)])
-            .unwrap();
-        b.add_children(NodeId(1), &[]).unwrap_err();
+        add(&b, NodeId(1), &[rec(b"x.txt", Flags::EMPTY, 512)]).unwrap();
+        add(&b, NodeId(1), &[]).unwrap_err();
         b.aggregate().unwrap();
         b.build_summaries();
         b.freeze()
@@ -130,7 +139,7 @@ mod tests {
     fn root_slash_path_has_no_double_slash() {
         let mut b = ArenaBuilder::new(16).unwrap();
         let root = b.set_root(b"/", &rec(b"", Flags::DIR, 0)).unwrap();
-        b.add_children(root, &[rec(b"etc", Flags::DIR, 0)]).unwrap();
+        add(&b, root, &[rec(b"etc", Flags::DIR, 0)]).unwrap();
         let a = b.freeze();
         let mut p = Vec::new();
         a.path(NodeId(1), &mut p);
@@ -146,19 +155,13 @@ mod tests {
         assert!(b.set_root(b"/r", &rec(b"", Flags::DIR, 0)).is_err());
         for bad in [&b""[..], b"a/b", b"a\0b", &[b'x'; 256]] {
             assert!(matches!(
-                b.add_children(root, &[rec(bad, Flags::EMPTY, 0)]),
+                add(&b, root, &[rec(bad, Flags::EMPTY, 0)]),
                 Err(ArenaError::InvalidName { .. })
             ));
         }
-        b.add_children(root, &[rec(b"f", Flags::EMPTY, 0)]).unwrap();
-        assert_eq!(
-            b.add_children(NodeId(1), &[]),
-            Err(ArenaError::NotADirectory(1))
-        );
-        assert_eq!(
-            b.add_children(NodeId(9), &[]),
-            Err(ArenaError::UnknownNode(9))
-        );
+        add(&b, root, &[rec(b"f", Flags::EMPTY, 0)]).unwrap();
+        assert_eq!(add(&b, NodeId(1), &[]), Err(ArenaError::NotADirectory(1)));
+        assert_eq!(add(&b, NodeId(9), &[]), Err(ArenaError::UnknownNode(9)));
     }
 
     #[test]
@@ -170,12 +173,9 @@ mod tests {
             rec(b"b", Flags::EMPTY, 0),
             rec(b"c", Flags::EMPTY, 0),
         ];
-        assert!(matches!(
-            b.add_children(root, &kids),
-            Err(ArenaError::Column(_))
-        ));
+        assert!(matches!(add(&b, root, &kids), Err(ArenaError::Column(_))));
         assert_eq!(b.len(), 1);
-        b.add_children(root, &kids[..2]).unwrap();
+        add(&b, root, &kids[..2]).unwrap();
         let a = b.freeze();
         a.check_invariants().unwrap();
     }
@@ -186,10 +186,10 @@ mod tests {
         let root = b.set_root(b"/r", &rec(b"", Flags::DIR, 100)).unwrap();
         let mut sub = rec(b"subvol", Flags::DIR | Flags::SUBVOL, 100);
         sub.dev = 1;
-        b.add_children(root, &[sub]).unwrap();
+        add(&b, root, &[sub]).unwrap();
         let mut f = rec(b"f", Flags::EMPTY, 50);
         f.dev = 1;
-        b.add_children(NodeId(1), &[f]).unwrap();
+        add(&b, NodeId(1), &[f]).unwrap();
         b.aggregate().unwrap();
         let a = b.freeze();
         a.check_invariants().unwrap();
@@ -202,7 +202,8 @@ mod tests {
         // Corrupt a builder through its columns and check the error.
         let mut b = ArenaBuilder::new(16).unwrap();
         let root = b.set_root(b"/r", &rec(b"", Flags::DIR, 0)).unwrap();
-        b.add_children(
+        add(
+            &b,
             root,
             &[rec(b"d", Flags::DIR, 10), rec(b"f", Flags::EMPTY, 5)],
         )
@@ -213,7 +214,7 @@ mod tests {
         // Root total of 15 is consistent; lowering it must fail I4.
         let mut b = ArenaBuilder::new(16).unwrap();
         let root = b.set_root(b"/r", &rec(b"", Flags::DIR, 0)).unwrap();
-        b.add_children(root, &[rec(b"f", Flags::EMPTY, 5)]).unwrap();
+        add(&b, root, &[rec(b"f", Flags::EMPTY, 5)]).unwrap();
         // No aggregation: root stays at 0 < 5.
         let a = b.freeze();
         assert!(matches!(
@@ -232,7 +233,7 @@ mod tests {
         let mut kids: Vec<NodeRecord<'_>> =
             names.iter().map(|n| rec(n, Flags::EMPTY, 10)).collect();
         kids.push(rec(b"sub", Flags::DIR, 0));
-        b.add_children(root, &kids).unwrap();
+        add(&b, root, &kids).unwrap();
         b.aggregate().unwrap();
         b.build_summaries();
         let a = b.freeze();

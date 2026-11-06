@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Instant;
 
-use gx_arena::{Arena, ArenaBuilder, Device, Flags, NodeId, NodeRecord};
+use gx_arena::{Arena, ArenaBuilder, Device, Flags, LocalCache, NodeId, NodeRecord};
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, RawDir, ResolveFlags, Statx, StatxFlags};
 use rustix::io::Errno;
@@ -86,6 +86,7 @@ struct Walker<'a> {
     children: Vec<Child>,
     plans: Vec<ChildPlan>,
     dir_path: Vec<u8>,
+    cache: LocalCache,
 }
 
 fn devnum(s: &Statx) -> u64 {
@@ -172,6 +173,7 @@ pub(crate) fn run(
         children: Vec::new(),
         plans: Vec::new(),
         dir_path: Vec::new(),
+        cache: LocalCache::default(),
     };
     w.add_root(&root_bytes, &stx)?;
     while let Some(p) = w.queue.pop_front() {
@@ -194,7 +196,7 @@ impl Walker<'_> {
 
     fn add_root(&mut self, path: &[u8], stx: &Statx) -> Result<(), ScanError> {
         let dn = devnum(stx);
-        let dev = self.b.add_device(
+        let (dev, _) = self.b.add_device(
             Device {
                 dev: dn,
                 mnt_id: stx.stx_mnt_id,
@@ -291,11 +293,11 @@ impl Walker<'_> {
                 0
             }
         };
-        if let Some(d) = self.b.device_mut(dev) {
+        self.b.update_device(dev, |d| {
             if d.fs_magic == 0 {
                 d.fs_magic = magic;
             }
-        }
+        });
         if fsmagic::is_pseudo(magic) {
             self.b.add_flags(p.node, Flags::PSEUDO_FS)?;
             self.stats.pseudo_fs += 1;
@@ -312,11 +314,12 @@ impl Walker<'_> {
                     if info.parent_uuid != [0; 16] {
                         extra |= Flags::SNAPSHOT_ECHO;
                     }
-                    if let Some(d) = self.b.device_mut(dev) {
-                        if d.mount_node == p.node.0 {
+                    let node = p.node.0;
+                    self.b.update_device(dev, |d| {
+                        if d.mount_node == node {
                             d.generation = info.generation;
                         }
-                    }
+                    });
                 }
                 Err(errno) => self.log(self.dir_path.clone(), "BTRFS_IOC_GET_SUBVOL_INFO", errno),
             }
@@ -412,13 +415,11 @@ impl Walker<'_> {
             records.push(record);
             plans.push(plan);
         }
-        let ids = self.b.add_children(p.node, &records)?;
+        let ids = self.b.add_children(p.node, &records, &mut self.cache)?;
         for (id, plan) in ids.clone().zip(&plans) {
             let node = NodeId(id);
             if let Some(dev) = plan.new_device {
-                if let Some(d) = self.b.device_mut(dev) {
-                    d.mount_node = id;
-                }
+                self.b.update_device(dev, |d| d.mount_node = id);
             }
             if plan.multi_link {
                 self.stats.multi_link_nodes.push(node);
@@ -510,7 +511,7 @@ impl Walker<'_> {
             Some(i) => i,
             None => {
                 let path = self.child_path(name);
-                let i = self.b.add_device(
+                let (i, _) = self.b.add_device(
                     Device {
                         dev: dn,
                         mnt_id: s.stx_mnt_id,

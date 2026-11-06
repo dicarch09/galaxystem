@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::arena::Arena;
 use crate::class::{Class, extension};
@@ -91,8 +92,33 @@ pub struct NodeRecord<'a> {
     pub gid: u32,
 }
 
+#[derive(Default)]
+struct DeviceTable {
+    rows: Vec<Device>,
+    strings: Vec<u8>,
+    index: HashMap<u64, u16>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    // A panic while holding one of these locks leaves plain data behind;
+    // the scan is aborted anyway, so poisoning carries no information.
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Per-thread cache in front of the shared extension and owner tables, so
+/// that interning does not take a lock for every entry.
+#[derive(Default)]
+pub struct LocalCache {
+    exts: HashMap<Box<[u8]>, (u32, Class)>,
+    owners: HashMap<(u32, u32), u16>,
+}
+
 /// Writable arena. Built by the scanner, then turned into an [`Arena`] with
 /// [`ArenaBuilder::freeze`].
+///
+/// All insertion methods take `&self`, so the builder can be shared between
+/// threads. Each node and each directory row must be written by one thread
+/// at a time; the scanner guarantees this (F0-diseno.md §2.2).
 pub struct ArenaBuilder {
     // Hot columns (§1.2).
     parent: Column<u32>,
@@ -114,12 +140,10 @@ pub struct ArenaBuilder {
     dirs: Column<DirRow>,
     summaries: Vec<Summary>,
     summary_nodes: Vec<u32>,
-    devices: Vec<Device>,
-    device_strings: Vec<u8>,
-    device_index: HashMap<u64, u16>,
-    owners: OwnerTable,
-    owner_overflow: HashMap<u32, (u32, u32)>,
-    exts: ExtTable,
+    devices: Mutex<DeviceTable>,
+    owners: Mutex<OwnerTable>,
+    owner_overflow: Mutex<HashMap<u32, (u32, u32)>>,
+    exts: Mutex<ExtTable>,
     root_path: Vec<u8>,
     node_capacity: u32,
     aggregated: bool,
@@ -165,12 +189,10 @@ impl ArenaBuilder {
             dirs: Column::with_capacity(node_capacity)?,
             summaries: Vec::new(),
             summary_nodes: Vec::new(),
-            devices: Vec::new(),
-            device_strings: Vec::new(),
-            device_index: HashMap::new(),
-            owners: OwnerTable::default(),
-            owner_overflow: HashMap::new(),
-            exts: ExtTable::default(),
+            devices: Mutex::new(DeviceTable::default()),
+            owners: Mutex::new(OwnerTable::default()),
+            owner_overflow: Mutex::new(HashMap::new()),
+            exts: Mutex::new(ExtTable::default()),
             root_path: Vec::new(),
             node_capacity,
             aggregated: false,
@@ -210,18 +232,27 @@ impl ArenaBuilder {
         let off = self.names.reserve(len)?.start;
         self.names.set_slice(off, path)?;
         let ids = self.reserve_nodes(1)?;
-        self.write_node(ids.start, NodeId::NONE.0, off, 0, record)?;
+        self.write_node(
+            ids.start,
+            NodeId::NONE.0,
+            off,
+            0,
+            record,
+            &mut LocalCache::default(),
+        )?;
         self.root_path = path.to_vec();
         Ok(NodeId(ids.start))
     }
 
     /// Inserts the children of `parent` as one contiguous block of ids and
     /// returns their range (invariant I2). Must be called at most once per
-    /// directory.
+    /// directory. The block is reserved with a single atomic operation, so
+    /// concurrent calls for different directories never interleave ids.
     pub fn add_children(
-        &mut self,
+        &self,
         parent: NodeId,
         children: &[NodeRecord<'_>],
+        cache: &mut LocalCache,
     ) -> Result<Range<u32>, ArenaError> {
         let p = parent.0;
         let flags = self.flags_raw(p)?;
@@ -259,7 +290,7 @@ impl ArenaBuilder {
         let ids = self.reserve_nodes(n)?;
         for (id, child) in ids.clone().zip(children) {
             self.names.set_slice(off, child.name)?;
-            self.write_node(id, p, off, child.name.len() as u8, child)?;
+            self.write_node(id, p, off, child.name.len() as u8, child, cache)?;
             off += child.name.len() as u32;
         }
         row.first_child = ids.start;
@@ -268,7 +299,7 @@ impl ArenaBuilder {
         Ok(ids)
     }
 
-    fn reserve_nodes(&mut self, n: u32) -> Result<Range<u32>, ArenaError> {
+    fn reserve_nodes(&self, n: u32) -> Result<Range<u32>, ArenaError> {
         let ids = self.parent.reserve(n)?;
         for col in [&self.name_off, &self.aux, &self.mtime] {
             col.ensure_len(ids.end)?;
@@ -286,12 +317,13 @@ impl ArenaBuilder {
     }
 
     fn write_node(
-        &mut self,
+        &self,
         id: u32,
         parent: u32,
         name_off: u32,
         name_len: u8,
         r: &NodeRecord<'_>,
+        cache: &mut LocalCache,
     ) -> Result<(), ArenaError> {
         let (class, aux) = if r.flags.contains(Flags::DIR) {
             let row = self.dirs.push(DirRow {
@@ -302,7 +334,7 @@ impl ArenaBuilder {
             (Class::Other, row)
         } else {
             let (ext_id, ext_class) = match extension(r.name) {
-                Some(ext) if id != 0 => self.exts.intern(ext),
+                Some(ext) if id != 0 => self.intern_ext(ext, cache),
                 _ => (0, Class::Other),
             };
             let class = if r.mode & S_IFMT != S_IFREG {
@@ -314,9 +346,16 @@ impl ArenaBuilder {
             };
             (class, ext_id)
         };
-        let owner = self.owners.intern(r.uid, r.gid);
+        let owner = match cache.owners.get(&(r.uid, r.gid)) {
+            Some(&o) => o,
+            None => {
+                let o = lock(&self.owners).intern(r.uid, r.gid);
+                cache.owners.insert((r.uid, r.gid), o);
+                o
+            }
+        };
         if owner == OWNER_OVERFLOW {
-            self.owner_overflow.insert(id, (r.uid, r.gid));
+            lock(&self.owner_overflow).insert(id, (r.uid, r.gid));
         }
         self.parent.set(id, parent)?;
         self.name_off.set(id, name_off)?;
@@ -334,6 +373,20 @@ impl ArenaBuilder {
         Ok(())
     }
 
+    fn intern_ext(&self, ext: &[u8], cache: &mut LocalCache) -> (u32, Class) {
+        // Extensions are at most MAX_EXTENSION_LEN bytes: lowercase on the stack.
+        let mut buf = [0u8; crate::class::MAX_EXTENSION_LEN];
+        let lower = &mut buf[..ext.len()];
+        lower.copy_from_slice(ext);
+        lower.make_ascii_lowercase();
+        if let Some(&hit) = cache.exts.get(&*lower) {
+            return hit;
+        }
+        let v = lock(&self.exts).intern(lower);
+        cache.exts.insert(lower.into(), v);
+        v
+    }
+
     fn flags_raw(&self, n: u32) -> Result<Flags, ArenaError> {
         self.flags
             .get(n)
@@ -347,9 +400,8 @@ impl ArenaBuilder {
     }
 
     /// Adds `extra` to the flags of `n`.
-    pub fn add_flags(&mut self, n: NodeId, extra: Flags) -> Result<(), ArenaError> {
-        let f = self.flags_raw(n.0)? | extra;
-        self.flags.set(n.0, f.bits())?;
+    pub fn add_flags(&self, n: NodeId, extra: Flags) -> Result<(), ArenaError> {
+        self.flags.fetch_or(n.0, extra.bits())?;
         Ok(())
     }
 
@@ -367,6 +419,33 @@ impl ArenaBuilder {
     /// Current disk bytes of `n` (own until [`Self::aggregate`]).
     pub fn disk_bytes(&self, n: NodeId) -> Result<u64, ArenaError> {
         self.disk_bytes.get(n.0).ok_or(ArenaError::UnknownNode(n.0))
+    }
+
+    /// Current apparent bytes of `n`.
+    pub fn apparent_bytes(&self, n: NodeId) -> Result<u64, ArenaError> {
+        self.apparent_bytes
+            .get(n.0)
+            .ok_or(ArenaError::UnknownNode(n.0))
+    }
+
+    /// Overwrites the sizes of `n` (used to store aggregated totals).
+    pub fn set_sizes(&self, n: NodeId, disk: u64, apparent: u64) -> Result<(), ArenaError> {
+        self.disk_bytes.set(n.0, disk)?;
+        self.apparent_bytes.set(n.0, apparent)?;
+        Ok(())
+    }
+
+    /// Directory-table row index of directory `n`.
+    pub fn dir_index(&self, n: NodeId) -> Result<u32, ArenaError> {
+        if !self.flags_raw(n.0)?.contains(Flags::DIR) {
+            return Err(ArenaError::NotADirectory(n.0));
+        }
+        self.aux.get(n.0).ok_or(ArenaError::UnknownNode(n.0))
+    }
+
+    /// Number of directory rows reserved so far.
+    pub fn dir_count(&self) -> u32 {
+        self.dirs.len()
     }
 
     /// `stx_ino` of `n`.
@@ -395,31 +474,41 @@ impl ArenaBuilder {
 
     /// Index of the device with number `dev`, if registered.
     pub fn device_index(&self, dev: u64) -> Option<u16> {
-        self.device_index.get(&dev).copied()
+        lock(&self.devices).index.get(&dev).copied()
     }
 
     /// Registers a device row with its mount path and returns its index.
-    pub fn add_device(&mut self, mut device: Device, mount_path: &[u8]) -> Result<u16, ArenaError> {
-        if let Some(i) = self.device_index(device.dev) {
-            return Ok(i);
+    /// Registers a device row with its mount path and returns its index and
+    /// whether it is new. If another thread registered the same device
+    /// first, its row is kept.
+    pub fn add_device(
+        &self,
+        mut device: Device,
+        mount_path: &[u8],
+    ) -> Result<(u16, bool), ArenaError> {
+        let mut t = lock(&self.devices);
+        if let Some(&i) = t.index.get(&device.dev) {
+            return Ok((i, false));
         }
-        let index = u16::try_from(self.devices.len()).map_err(|_| ArenaError::TooManyDevices)?;
-        device.mount_path_off = self.device_strings.len() as u32;
+        let index = u16::try_from(t.rows.len()).map_err(|_| ArenaError::TooManyDevices)?;
+        device.mount_path_off = t.strings.len() as u32;
         device.mount_path_len = mount_path.len() as u32;
-        self.device_strings.extend_from_slice(mount_path);
-        self.devices.push(device);
-        self.device_index.insert(device.dev, index);
-        Ok(index)
+        t.strings.extend_from_slice(mount_path);
+        t.rows.push(device);
+        t.index.insert(device.dev, index);
+        Ok((index, true))
     }
 
-    /// Mutable access to a device row.
-    pub fn device_mut(&mut self, index: u16) -> Option<&mut Device> {
-        self.devices.get_mut(index as usize)
+    /// Updates a device row in place.
+    pub fn update_device(&self, index: u16, f: impl FnOnce(&mut Device)) {
+        if let Some(d) = lock(&self.devices).rows.get_mut(index as usize) {
+            f(d);
+        }
     }
 
-    /// Device row.
-    pub fn device(&self, index: u16) -> Option<&Device> {
-        self.devices.get(index as usize)
+    /// Copy of a device row.
+    pub fn device(&self, index: u16) -> Option<Device> {
+        lock(&self.devices).rows.get(index as usize).copied()
     }
 
     /// Whether `n` adds its sizes to its parent (invariant I4).
@@ -485,6 +574,10 @@ impl ArenaBuilder {
 
     /// Freezes the arena into its read-only form.
     pub fn freeze(self) -> Arena {
+        let devices = self
+            .devices
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
         Arena::from_parts(
             crate::arena::NodeColumns {
                 parent: self.parent.freeze(),
@@ -506,11 +599,22 @@ impl ArenaBuilder {
                 dirs: self.dirs.freeze(),
                 summaries: self.summaries,
                 summary_nodes: self.summary_nodes,
-                devices: self.devices,
-                device_strings: self.device_strings,
-                owners: self.owners.pairs().to_vec(),
-                owner_overflow: self.owner_overflow,
-                exts: self.exts,
+                devices: devices.rows,
+                device_strings: devices.strings,
+                owners: self
+                    .owners
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .pairs()
+                    .to_vec(),
+                owner_overflow: self
+                    .owner_overflow
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner),
+                exts: self
+                    .exts
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner),
                 root_name_len: self.root_path.len() as u32,
                 node_capacity: self.node_capacity,
             },
