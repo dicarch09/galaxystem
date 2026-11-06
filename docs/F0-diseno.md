@@ -28,7 +28,7 @@ Este documento es la referencia técnica de la F0. Los prompts de `prompts/` rem
 | I1 | La raíz es el nodo 0. `parent[0] = NONE` (`u32::MAX`) |
 | I2 | Los hijos de cada carpeta ocupan un rango contiguo `[first_child, first_child + child_count)` |
 | I3 | Para todo nodo `n ≠ 0`, `parent[n]` es un `DIR` y `n` está dentro de su rango de hijos |
-| I4 | `disk_bytes[dir] = bloques propios del dir + Σ disk_bytes de hijos que aportan`. No aportan: `HARDLINK_DUP`, `MOUNT_POINT`, `BIND_ALIAS` y todo nodo cuyo `dev` difiere del de su padre (ADR-020). Igual para `apparent_bytes` |
+| I4 | `disk_bytes[dir] = bloques propios del dir + Σ disk_bytes de hijos que aportan`. No aportan: `HARDLINK_DUP`, `MOUNT_POINT`, `BIND_ALIAS` y todo nodo cuyo `dev` difiere del de su padre (ADR-020). Igual para `apparent_bytes`, donde el aporte propio de una carpeta es 0 (ADR-021) |
 | I5 | Un `HARDLINK_DUP` guarda sus tamaños reales (para mostrarlo), pero no aporta al padre |
 | I6 | `1 ≤ name_len ≤ 255`. Los nombres no contienen `/` ni `\0`. Excepción: la raíz guarda la ruta absoluta escaneada; como puede superar 255 bytes, su largo va en un campo del arena y `name_len[0] = 0` |
 | I7 | En el snapshot, `name_off` es monótono creciente con el id |
@@ -52,7 +52,7 @@ Este documento es la referencia técnica de la F0. Los prompts de `prompts/` rem
 | Columna | Tipo | Contenido |
 |---|---|---|
 | `ino` | u64 | `stx_ino` |
-| `apparent_bytes` | u64 | Archivo: `stx_size`. Carpeta: total según I4 |
+| `apparent_bytes` | u64 | Archivo regular o symlink: `stx_size`. Carpeta, dispositivo, socket o fifo: 0 propio; las carpetas guardan el total según I4 (ADR-021) |
 | `mtime` | u32 | Segundos Unix, saturado a `[0, u32::MAX]` |
 | `dev` | u16 | Índice en la tabla de dispositivos (§1.6) |
 | `mode` | u16 | `stx_mode` |
