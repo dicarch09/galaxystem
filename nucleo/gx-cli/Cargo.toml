@@ -11,3 +11,14 @@ publish.workspace = true
 [[bin]]
 name = "gx"
 path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+gx-arena.workspace = true
+gx-scan.workspace = true
+gx-synth.workspace = true
+rand_xoshiro.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
