@@ -12,6 +12,7 @@ publish.workspace = true
 crossbeam-deque.workspace = true
 crossbeam-utils.workspace = true
 gx-arena.workspace = true
+io-uring = { workspace = true, optional = true }
 rustix.workspace = true
 thiserror.workspace = true
 
@@ -20,3 +21,7 @@ fuser = { version = "0.18.0", default-features = false }
 gx-synth.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+
+[features]
+# Batched statx through io_uring (A/B of F0-diseno.md §2.2).
+uring = ["dep:io-uring"]

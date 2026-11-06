@@ -129,6 +129,31 @@ fn parallel_matches_sequential_in_every_profile() {
     }
 }
 
+/// The io_uring `statx` backend gives the same result.
+#[cfg(feature = "uring")]
+#[test]
+fn uring_backend_matches_sequential() {
+    use gx_scan::StatxBackend;
+    let tmp = tempfile::tempdir().unwrap();
+    let params = Params::new(Profile::Servidor, 20_000, 2);
+    let report = gx_synth::generate(&tmp.path().join("t"), &params, false).unwrap();
+    let (sa, ss) = scan(&report.root, ScanMode::Sequential, 1);
+    let opts = ScanOptions {
+        statx: StatxBackend::Uring,
+        threads: ThreadPolicy::uniform(8),
+        ..ScanOptions::default()
+    };
+    let (pa, ps) = gx_scan::scan_with_stats(&report.root, &opts, &NoProgress).unwrap();
+    pa.check_invariants().unwrap();
+    if ps.uring_threads == 0 {
+        eprintln!(
+            "AVISO: io_uring no disponible (errno {:?}); se probó la caída a statx síncrono",
+            ps.uring_error
+        );
+    }
+    compare(&sa, &ss, &pa, &ps);
+}
+
 #[test]
 #[ignore = "50 escaneos de 100 000 archivos; ejecutar con --ignored"]
 fn stress_pathological_fifty_runs() {

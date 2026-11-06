@@ -41,6 +41,20 @@ pub enum ScanMode {
     Parallel,
 }
 
+/// How the parallel scanner obtains the metadata of directory entries (the
+/// A/B of F0-diseno.md §2.2). `getdents64` is synchronous in both cases.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatxBackend {
+    /// One synchronous `statx` per entry.
+    #[default]
+    Sync,
+    /// Batches of `IORING_OP_STATX` per directory, one ring per thread.
+    /// Needs the `uring` feature; without it, or when io_uring is
+    /// unavailable, the scan falls back to [`StatxBackend::Sync`] and
+    /// reports it in [`ScanStats::uring_error`].
+    Uring,
+}
+
 /// Threads per filesystem pool in [`ScanMode::Parallel`] (F0-diseno.md
 /// §2.2). Pools start with one thread and grow up to these limits while
 /// there is queued work.
@@ -98,6 +112,9 @@ pub struct ScanOptions {
     pub mode: ScanMode,
     /// Threads per pool ([`ScanMode::Parallel`] only).
     pub threads: ThreadPolicy,
+    /// `statx` backend ([`ScanMode::Parallel`] only; network directories
+    /// always use synchronous `statx` on their helpers).
+    pub statx: StatxBackend,
     /// Maximum time to read one directory of a network filesystem before
     /// marking it `STALE` ([`ScanMode::Parallel`] only).
     pub net_timeout: Duration,
@@ -120,6 +137,7 @@ impl Default for ScanOptions {
         ScanOptions {
             mode: ScanMode::default(),
             threads: ThreadPolicy::default(),
+            statx: StatxBackend::default(),
             net_timeout: Duration::from_secs(5),
             max_abandoned: 4,
             node_capacity: DEFAULT_NODE_CAPACITY,
@@ -197,6 +215,11 @@ pub struct ScanStats {
     pub abandoned_threads: u64,
     /// Scanner threads started (1 in [`ScanMode::Sequential`]).
     pub threads: u64,
+    /// Threads that used an io_uring ring ([`StatxBackend::Uring`]).
+    pub uring_threads: u64,
+    /// `errno` of the first failure to create a ring, if any thread fell
+    /// back to synchronous `statx`.
+    pub uring_error: Option<i32>,
     /// Total time.
     pub elapsed: Duration,
     /// Time until 10 000 nodes were indexed, if reached.

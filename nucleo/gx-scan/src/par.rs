@@ -47,19 +47,23 @@ use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use crossbeam_utils::{Backoff, CachePadded};
 use gx_arena::column::Column;
 use gx_arena::{Arena, ArenaBuilder, ArenaError, Device, Flags, LocalCache, NodeId, NodeRecord};
-use rustix::fd::OwnedFd;
+use rustix::fd::{AsFd, OwnedFd};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, RawDir, ResolveFlags, Statx, StatxFlags};
 use rustix::io::Errno;
 
 use crate::mountinfo::MountTable;
-use crate::sys::SubvolInfo;
+use crate::sys::{StatxRing, SubvolInfo};
 use crate::walk::{
     BTRFS_SUBVOL_INO, FIRST_NODES_MILESTONE, MASK, apparent, devnum, mtime, raise_nofile_limit,
     type_flags,
 };
-use crate::{Progress, ScanError, ScanErrorRecord, ScanOptions, ScanStats, fsmagic, sys};
+use crate::{
+    Progress, ScanError, ScanErrorRecord, ScanOptions, ScanStats, StatxBackend, fsmagic, sys,
+};
 
 const HARDLINK_SHARDS: usize = 64;
+/// Submission slots of each io_uring ring.
+const RING_ENTRIES: u32 = 256;
 const S_IFDIR: u16 = 0o040000;
 /// Longest sleep of an idle thread between looks for work.
 const MAX_IDLE_SLEEP: Duration = Duration::from_millis(1);
@@ -116,6 +120,9 @@ struct Listing {
     children: Vec<Child>,
     /// `getdents64` failed after reading `children`.
     getdents: Option<Errno>,
+    /// Scratch space of a `statx` batch: child indices and results.
+    batch_idx: Vec<usize>,
+    batch_out: Vec<Result<Statx, Errno>>,
 }
 
 impl Listing {
@@ -130,14 +137,16 @@ impl Listing {
 }
 
 /// Reads one directory without touching the arena: open, boundary checks,
-/// `getdents64` and `statx` of every entry not selected by `defer`. Runs on
-/// scanner threads and on network helpers. Returns the open directory.
+/// `getdents64` and `statx` of every entry not selected by `defer`, in one
+/// io_uring batch if `ring` is given. Runs on scanner threads and on
+/// network helpers. Returns the open directory.
 fn list_dir(
     path: &[u8],
     t: &Task,
     buf: &mut [MaybeUninit<u8>],
     out: &mut Listing,
     defer: &dyn Fn(&[u8]) -> bool,
+    ring: Option<&mut StatxRing>,
 ) -> Option<OwnedFd> {
     out.clear();
     let fd = match rustix::fs::openat2(
@@ -197,10 +206,36 @@ fn list_dir(
     if net {
         at |= AtFlags::STATX_DONT_SYNC;
     }
-    for c in &mut out.children {
-        let name = &out.names[c.name.clone()];
-        if !defer(name) {
-            c.stat = Stat::Done(rustix::fs::statx(&fd, name, at, MASK));
+    match ring {
+        Some(ring) => {
+            let Listing {
+                names,
+                children,
+                batch_idx,
+                batch_out,
+                ..
+            } = out;
+            batch_idx.clear();
+            batch_idx
+                .extend((0..children.len()).filter(|&i| !defer(&names[children[i].name.clone()])));
+            ring.statx_all(
+                fd.as_fd(),
+                batch_idx.iter().map(|&i| &names[children[i].name.clone()]),
+                at,
+                MASK,
+                batch_out,
+            );
+            for (&i, r) in batch_idx.iter().zip(batch_out.drain(..)) {
+                children[i].stat = Stat::Done(r);
+            }
+        }
+        None => {
+            for c in &mut out.children {
+                let name = &out.names[c.name.clone()];
+                if !defer(name) {
+                    c.stat = Stat::Done(rustix::fs::statx(&fd, name, at, MASK));
+                }
+            }
         }
     }
     Some(fd)
@@ -253,9 +288,10 @@ impl NetHelper {
                 let mut buf = vec![MaybeUninit::uninit(); buf_size];
                 for req in requests {
                     let mut out = Listing::default();
-                    drop(list_dir(&req.path, &req.task, &mut buf, &mut out, &|_| {
-                        false
-                    }));
+                    let no_defer = |_: &[u8]| false;
+                    drop(list_dir(
+                        &req.path, &req.task, &mut buf, &mut out, &no_defer, None,
+                    ));
                     if replies.send(out).is_err() {
                         break;
                     }
@@ -634,6 +670,9 @@ struct Local {
     dir_path: Vec<u8>,
     cache: LocalCache,
     helper: Option<NetHelper>,
+    /// io_uring ring, created on first use with [`StatxBackend::Uring`].
+    ring: Option<StatxRing>,
+    ring_tried: bool,
     dir_disk: u64,
 }
 
@@ -649,6 +688,8 @@ impl Local {
             dir_path: Vec::new(),
             cache: LocalCache::default(),
             helper: None,
+            ring: None,
+            ring_tried: false,
             dir_disk: 0,
         }
     }
@@ -749,10 +790,27 @@ impl Local {
                 }
             }
         } else {
+            if ctx.opts.statx == StatxBackend::Uring && !self.ring_tried {
+                self.ring_tried = true;
+                match StatxRing::new(RING_ENTRIES) {
+                    Ok(ring) => {
+                        self.ring = Some(ring);
+                        self.stats.uring_threads += 1;
+                    }
+                    Err(errno) => self.stats.uring_error = Some(errno.raw_os_error()),
+                }
+            }
             let check = ctx.net_mount_parents.contains(&self.dir_path);
             let dir_path = &self.dir_path;
             let defer = |name: &[u8]| check && ctx.net_mount_at(dir_path, name).is_some();
-            list_dir(dir_path, &p, &mut self.buf, &mut self.listing, &defer)
+            list_dir(
+                dir_path,
+                &p,
+                &mut self.buf,
+                &mut self.listing,
+                &defer,
+                self.ring.as_mut(),
+            )
         };
 
         // 2. Opening errors.
@@ -1100,6 +1158,8 @@ fn merge(total: &mut ScanStats, part: ScanStats, max_logged: usize) {
     total.bind_aliases += part.bind_aliases;
     total.timed_out += part.timed_out;
     total.abandoned_threads += part.abandoned_threads;
+    total.uring_threads += part.uring_threads;
+    total.uring_error = total.uring_error.or(part.uring_error);
     let room = max_logged.saturating_sub(total.error_log.len());
     total
         .error_log
