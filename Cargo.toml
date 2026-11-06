@@ -25,6 +25,7 @@ debug = true
 gx-arena = { path = "nucleo/gx-arena" }
 gx-scan = { path = "nucleo/gx-scan" }
 gx-synth = { path = "nucleo/gx-synth" }
+gx-bench = { path = "nucleo/gx-bench" }
 rustix = { version = "1.1", features = ["fs", "mm", "process", "param"] }
 thiserror = "2.0"
 anyhow = "1.0"

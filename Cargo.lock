@@ -250,6 +250,10 @@ dependencies = [
 [[package]]
 name = "gx-bench"
 version = "0.0.0"
+dependencies = [
+ "gx-scan",
+ "thiserror",
+]
 
 [[package]]
 name = "gx-cli"
@@ -258,6 +262,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gx-arena",
+ "gx-bench",
  "gx-scan",
  "gx-synth",
  "rand_xoshiro",
