@@ -1,0 +1,5 @@
+# Cross-compilation for 64-bit ARM. Requires the GNU cross toolchain:
+#   Ubuntu/Debian: gcc-aarch64-linux-gnu
+#   Arch/CachyOS:  aarch64-linux-gnu-gcc
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
