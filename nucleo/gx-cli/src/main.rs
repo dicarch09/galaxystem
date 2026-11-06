@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use gx_scan::{NoProgress, ScanOptions};
+use clap::{Args, Parser, Subcommand};
+use gx_scan::{NoProgress, ScanMode, ScanOptions, ThreadPolicy};
 use gx_synth::{Params, Profile};
 
 /// Galaxystem indexer tools.
@@ -30,6 +30,30 @@ struct Cli {
     command: Command,
 }
 
+/// Scanner options shared by `scan` and `verify-du`.
+#[derive(Args)]
+struct ScanArgs {
+    /// Usa el escáner de un hilo de la F0.1 (referencia).
+    #[arg(long)]
+    sequential: bool,
+    /// Hilos por sistema de archivos (por defecto según el tipo de disco).
+    #[arg(long, conflicts_with = "sequential")]
+    threads: Option<usize>,
+}
+
+impl ScanArgs {
+    fn options(&self) -> ScanOptions {
+        let mut opts = ScanOptions::default();
+        if self.sequential {
+            opts.mode = ScanMode::Sequential;
+        }
+        if let Some(n) = self.threads {
+            opts.threads = ThreadPolicy::uniform(n.max(1));
+        }
+        opts
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Escanea una ruta e imprime totales, nodos, tiempo y bytes por nodo.
@@ -39,11 +63,15 @@ enum Command {
         /// Muestra el tamaño aparente como total principal.
         #[arg(long)]
         apparent: bool,
+        #[command(flatten)]
+        scan: ScanArgs,
     },
     /// Compara el escaneo con du y find (F0-validacion.md §V1).
     VerifyDu {
         /// Ruta a verificar.
         path: PathBuf,
+        #[command(flatten)]
+        scan: ScanArgs,
     },
     /// Genera un árbol sintético determinista (F0-diseno.md §6).
     Synth {
@@ -81,8 +109,8 @@ fn human(bytes: u64) -> String {
     format!("{v:.2} {}", UNITS[u])
 }
 
-fn scan(path: &Path, apparent: bool) -> Result<()> {
-    let (arena, stats) = gx_scan::scan_with_stats(path, &ScanOptions::default(), &NoProgress)
+fn scan(path: &Path, apparent: bool, opts: &ScanOptions) -> Result<()> {
+    let (arena, stats) = gx_scan::scan_with_stats(path, opts, &NoProgress)
         .with_context(|| format!("no se pudo escanear {}", path.display()))?;
     let root = arena.root();
     let (disk, app) = (arena.disk_bytes(root), arena.apparent_bytes(root));
@@ -107,8 +135,9 @@ fn scan(path: &Path, apparent: bool) -> Result<()> {
         .map(|t| format!("{:.1} ms", t.as_secs_f64() * 1e3))
         .unwrap_or_else(|| "no alcanzado".into());
     println!(
-        "Tiempo:           {:.3} s (primeros 10.000 nodos: {first})",
-        stats.elapsed.as_secs_f64()
+        "Tiempo:           {:.3} s (primeros 10.000 nodos: {first}; {} hilos)",
+        stats.elapsed.as_secs_f64(),
+        stats.threads
     );
     println!(
         "Bytes por nodo:   {:.1} (calientes {} + frías {} + nombres {} + carpetas {} + resúmenes {} B)",
@@ -120,13 +149,14 @@ fn scan(path: &Path, apparent: bool) -> Result<()> {
         mem.summaries
     );
     println!(
-        "Incidencias:      {} bloqueadas, {} errores, {} desaparecidas, {} hard links repetidos, {} montajes, {} fronteras de dispositivo",
+        "Incidencias:      {} bloqueadas, {} errores, {} desaparecidas, {} hard links repetidos, {} montajes, {} fronteras de dispositivo, {} sin respuesta de red",
         stats.locked,
         stats.errors,
         stats.vanished,
         stats.hardlink_dups,
         stats.mount_points,
-        stats.device_boundaries
+        stats.device_boundaries,
+        stats.timed_out
     );
     for e in stats.error_log.iter().take(10) {
         println!(
@@ -141,8 +171,12 @@ fn scan(path: &Path, apparent: bool) -> Result<()> {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Scan { path, apparent } => scan(&path, apparent).map(|()| ExitCode::SUCCESS),
-        Command::VerifyDu { path } => Ok(if verify::run(&path)?.ok {
+        Command::Scan {
+            path,
+            apparent,
+            scan: args,
+        } => scan(&path, apparent, &args.options()).map(|()| ExitCode::SUCCESS),
+        Command::VerifyDu { path, scan: args } => Ok(if verify::run(&path, &args.options())?.ok {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE

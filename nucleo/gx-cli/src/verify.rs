@@ -144,8 +144,8 @@ fn mark(ok: bool) -> &'static str {
 }
 
 /// Runs §V1 on `root` and prints a summary.
-pub fn run(root: &Path) -> Result<Outcome> {
-    let (arena, stats) = gx_scan::scan_with_stats(root, &ScanOptions::default(), &NoProgress)
+pub fn run(root: &Path, opts: &ScanOptions) -> Result<Outcome> {
+    let (arena, stats) = gx_scan::scan_with_stats(root, opts, &NoProgress)
         .with_context(|| format!("no se pudo escanear {}", root.display()))?;
     arena
         .check_invariants()
