@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use gx_scan::{NoProgress, ScanMode, ScanOptions, ThreadPolicy};
+use gx_scan::{NoProgress, ScanMode, ScanOptions, StatxBackend, ThreadPolicy};
 use gx_synth::{Params, Profile};
 
 /// Galaxystem indexer tools.
@@ -39,6 +39,17 @@ struct ScanArgs {
     /// Hilos por sistema de archivos (por defecto según el tipo de disco).
     #[arg(long, conflicts_with = "sequential")]
     threads: Option<usize>,
+    /// Cómo obtener los metadatos: sync (un statx por entrada) o uring
+    /// (lotes de io_uring; requiere compilar con la feature `uring`).
+    #[arg(long, value_enum, default_value_t = Statx::Sync, conflicts_with = "sequential")]
+    statx: Statx,
+}
+
+/// `statx` backend selectable from the command line.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Statx {
+    Sync,
+    Uring,
 }
 
 impl ScanArgs {
@@ -50,6 +61,10 @@ impl ScanArgs {
         if let Some(n) = self.threads {
             opts.threads = ThreadPolicy::uniform(n.max(1));
         }
+        opts.statx = match self.statx {
+            Statx::Sync => StatxBackend::Sync,
+            Statx::Uring => StatxBackend::Uring,
+        };
         opts
     }
 }
@@ -139,6 +154,18 @@ fn scan(path: &Path, apparent: bool, opts: &ScanOptions) -> Result<()> {
         stats.elapsed.as_secs_f64(),
         stats.threads
     );
+    if opts.statx == StatxBackend::Uring {
+        match stats.uring_error {
+            None => println!(
+                "statx:            io_uring en {} hilos",
+                stats.uring_threads
+            ),
+            Some(errno) => println!(
+                "statx:            io_uring en {} hilos; los demás usaron statx síncrono (errno {errno})",
+                stats.uring_threads
+            ),
+        }
+    }
     println!(
         "Bytes por nodo:   {:.1} (calientes {} + frías {} + nombres {} + carpetas {} + resúmenes {} B)",
         mem.total() as f64 / stats.nodes.max(1) as f64,
