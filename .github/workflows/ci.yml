@@ -64,10 +64,9 @@ jobs:
 
   test-aarch64-qemu:
     runs-on: ubuntu-latest
-    # Allowed to fail until F0.1 (prompts/F0.0-bootstrap.md).
-    continue-on-error: true
     env:
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+      # The aarch64 glibc from libc6-arm64-cross lives here; qemu reads it.
+      QEMU_LD_PREFIX: /usr/aarch64-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -76,8 +75,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: aarch64-qemu
-      - name: Install aarch64 cross linker and qemu-user
+      - name: Install aarch64 cross linker and libc
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      # Registers a recent qemu-user through binfmt_misc. Ubuntu's own
+      # qemu-user (8.2) lacks openat2, which the scanner requires. With binfmt,
+      # aarch64 binaries spawned by the tests (gx) also run under qemu.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - run: cargo test --workspace --target aarch64-unknown-linux-gnu
