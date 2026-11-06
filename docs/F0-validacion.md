@@ -19,7 +19,7 @@ du -x -s -b  <ruta>     # tamaño aparente total
 
 1. **Totales de la raíz.** Para cada perfil sintético y para un árbol real (`~` o `/usr`), los totales de Galaxystem deben ser **idénticos byte a byte** a los de `du`.
 2. **Totales por carpeta.** Se eligen 200 carpetas al azar (seed fijo) y se compara cada una con `du -x -s` sobre esa carpeta. Se **excluyen** las carpetas cuyo subárbol contiene hard links, porque la atribución depende del orden de recorrido (`F0-diseno.md` §2.5).
-3. **Conteo de entradas.** La cantidad de nodos debe coincidir con `find <ruta> -xdev | wc -l`, descontando los descendientes de carpetas `PSEUDO_FS`, `BIND_ALIAS` y `LOCKED`.
+3. **Conteo de entradas.** La cantidad de nodos debe coincidir con `find <ruta> -xdev | wc -l`, descontando los descendientes de carpetas `PSEUDO_FS`, `BIND_ALIAS` y `LOCKED`, y los de toda frontera de dispositivo (`MOUNT_POINT` o cambio de `st_dev`), que `find -xdev` lista pero no recorre. `gx verify-du` cuenta con `find -printf .` para no depender de saltos de línea en los nombres.
 
 **Árboles reales que cambian durante la prueba** (por ejemplo `~` con un navegador abierto) pueden dar diferencias legítimas. Para los criterios de aceptación valen **solo los árboles sintéticos**, que no cambian; el árbol real se reporta como informativo.
 

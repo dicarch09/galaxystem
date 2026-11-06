@@ -23,3 +23,4 @@ Cada decisión tiene un número fijo. Si se reemplaza, se marca "Reemplazada por
 | 017 | Lente de lista por carpeta en F3 | Lo espacial es malo para comparar metadatos | Aceptada |
 | 018 | Stack de render (wgpu vs Vulkan directo) | Depende de la importación de dmabuf para Smithay | Abierta: se decide en F0-R |
 | 019 | Reconciliación de la F0 reconstruye un arena nuevo en lugar de mutar el existente | Simple y correcto; la mutación en vivo llega en F3 | Aceptada |
+| 020 | Toda frontera de `st_dev` (montaje o subvolumen/snapshot btrfs anidado) se escanea y guarda su total, pero aporta 0 a su padre | GNU `du -x` excluye cada entrada con `st_dev` distinto al de la raíz, y en btrfs cada subvolumen tiene su propio `st_dev` aunque no esté montado aparte. Así se mantiene la exactitud contra `du -x`. Corrige la frase de `F0-diseno.md` §2.4 que decía que un `SNAPSHOT_ECHO` aporta al total | Aceptada (F0.1) |

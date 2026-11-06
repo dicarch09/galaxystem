@@ -28,12 +28,12 @@ Este documento es la referencia técnica de la F0. Los prompts de `prompts/` rem
 | I1 | La raíz es el nodo 0. `parent[0] = NONE` (`u32::MAX`) |
 | I2 | Los hijos de cada carpeta ocupan un rango contiguo `[first_child, first_child + child_count)` |
 | I3 | Para todo nodo `n ≠ 0`, `parent[n]` es un `DIR` y `n` está dentro de su rango de hijos |
-| I4 | `disk_bytes[dir] = bloques propios del dir + Σ disk_bytes de hijos que aportan`. No aportan: `HARDLINK_DUP`, `MOUNT_POINT`, `BIND_ALIAS`. Igual para `apparent_bytes` |
+| I4 | `disk_bytes[dir] = bloques propios del dir + Σ disk_bytes de hijos que aportan`. No aportan: `HARDLINK_DUP`, `MOUNT_POINT`, `BIND_ALIAS` y todo nodo cuyo `dev` difiere del de su padre (ADR-020). Igual para `apparent_bytes` |
 | I5 | Un `HARDLINK_DUP` guarda sus tamaños reales (para mostrarlo), pero no aporta al padre |
-| I6 | `1 ≤ name_len ≤ 255`. Los nombres no contienen `/` ni `\0`. Excepción: la raíz guarda la ruta absoluta escaneada |
+| I6 | `1 ≤ name_len ≤ 255`. Los nombres no contienen `/` ni `\0`. Excepción: la raíz guarda la ruta absoluta escaneada; como puede superar 255 bytes, su largo va en un campo del arena y `name_len[0] = 0` |
 | I7 | En el snapshot, `name_off` es monótono creciente con el id |
 
-**Nota sobre montajes.** Un `MOUNT_POINT` guarda en sus campos el total de la galaxia montada, pero aporta 0 a su padre. Así los totales de cada sistema de archivos coinciden con `du -x`.
+**Nota sobre montajes.** Un `MOUNT_POINT` guarda en sus campos el total de la galaxia montada, pero aporta 0 a su padre. Así los totales de cada sistema de archivos coinciden con `du -x`. Lo mismo vale para cualquier frontera de `st_dev` sin montaje, como un subvolumen o snapshot btrfs anidado (ADR-020).
 
 ### §1.2 Columnas calientes (todos los nodos, 24 B)
 
@@ -102,7 +102,7 @@ La clasificación se hace por extensión, sin distinguir mayúsculas. Las extens
 
 **Resúmenes** (solo carpetas con 1.024 hijos o más, 96 B): `count: u32` y `bytes: u64` para cada una de las 8 clases. Cuentan hijos directos y sirven para las nebulosas de la F1.
 
-**Dispositivos** (una fila por sistema de archivos):
+**Dispositivos** (una fila por cada `st_dev` distinto; en btrfs, una por subvolumen):
 
 | Campo | Tipo | Contenido |
 |---|---|---|
@@ -190,9 +190,10 @@ Por cada carpeta:
 | tmpfs, devtmpfs | Se escanean normalmente |
 | NFS, CIFS/SMB2, FUSE de red (sshfs y similares, según `/proc/self/mountinfo`) | `NET_FS`, con las reglas de §2.2 |
 | Montaje cuya raíz ya está indexada (bind mount, por `/proc/self/mountinfo`) | `BIND_ALIAS`: no se desciende |
+| `stx_dev` distinto al del padre con el mismo `stx_mnt_id` | Frontera de dispositivo (subvolumen btrfs): se escanea, guarda su total y aporta 0 al padre (ADR-020) |
 | btrfs con `stx_ino == 256` | `SUBVOL`. `BTRFS_IOC_GET_SUBVOL_INFO` (sin privilegios desde el kernel 4.18): si `parent_uuid` no es cero, `SNAPSHOT_ECHO` |
 
-En la F0 un `SNAPSHOT_ECHO` **sí** se escanea y aporta al total, igual que `du -x`. Su tratamiento como eco es visual (F1) y su tamaño exclusivo queda para la F5.
+En la F0 un `SNAPSHOT_ECHO` **sí** se escanea y guarda su propio total, pero **no aporta** a su padre: tiene otro `st_dev`, y GNU `du -x` excluye toda entrada con `st_dev` distinto al de la raíz (ADR-020). Su tratamiento como eco es visual (F1) y su tamaño exclusivo queda para la F5.
 
 ### §2.5 Hard links
 
