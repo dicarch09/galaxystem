@@ -33,10 +33,15 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # A blocked FUSE test must not hold the runner for hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # fusermount3, for the hung network mount test (skipped without it).
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y fuse3
       - run: cargo test --workspace
 
   deny:
@@ -64,6 +69,7 @@ jobs:
 
   test-aarch64-qemu:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # The aarch64 glibc from libc6-arm64-cross lives here; qemu reads it.
       QEMU_LD_PREFIX: /usr/aarch64-linux-gnu
@@ -78,7 +84,7 @@ jobs:
       - name: Install aarch64 cross linker and libc
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross fuse3
       # Registers a recent qemu-user through binfmt_misc. Ubuntu's own
       # qemu-user (8.2) lacks openat2, which the scanner requires. With binfmt,
       # aarch64 binaries spawned by the tests (gx) also run under qemu.
