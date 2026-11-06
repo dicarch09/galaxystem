@@ -1,0 +1,2 @@
+# Set fijo de 200 consultas para el benchmark de búsqueda (F0-validacion.md §V2).
+# Se llena en la F0.4. Las líneas que empiezan con '#' son comentarios.
