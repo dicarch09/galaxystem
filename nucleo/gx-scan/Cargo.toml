@@ -14,5 +14,6 @@ rustix.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+gx-synth.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

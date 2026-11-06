@@ -204,6 +204,7 @@ dependencies = [
  "gx-scan",
  "gx-synth",
  "rand_xoshiro",
+ "rustix",
  "tempfile",
 ]
 
@@ -212,6 +213,7 @@ name = "gx-scan"
 version = "0.0.0"
 dependencies = [
  "gx-arena",
+ "gx-synth",
  "proptest",
  "rustix",
  "tempfile",
