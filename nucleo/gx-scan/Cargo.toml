@@ -16,6 +16,7 @@ rustix.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+fuser = { version = "0.18.0", default-features = false }
 gx-synth.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
