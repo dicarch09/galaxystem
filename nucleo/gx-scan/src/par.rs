@@ -995,10 +995,7 @@ impl Local {
             if key == pool.key {
                 deque.push(task);
             } else {
-                match get_pool(r, key, task.mnt_id, task.net) {
-                    Ok(other) => other.injector.push(task),
-                    Err(e) => return Err(e),
-                }
+                get_pool(r, key, task.mnt_id, task.net)?.injector.push(task);
             }
         }
         if deque.len() > 1 {
