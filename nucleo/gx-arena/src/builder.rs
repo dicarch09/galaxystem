@@ -435,6 +435,19 @@ impl ArenaBuilder {
         Ok(())
     }
 
+    /// Atomically adds `disk` and `apparent` to the sizes of `n`. Used by the
+    /// concurrent aggregation of F0-diseno.md §2.3, where the sizes of a
+    /// directory grow from its own blocks to its total while it is scanned.
+    pub fn add_sizes(&self, n: NodeId, disk: u64, apparent: u64) -> Result<(), ArenaError> {
+        if disk != 0 {
+            self.disk_bytes.fetch_add(n.0, disk)?;
+        }
+        if apparent != 0 {
+            self.apparent_bytes.fetch_add(n.0, apparent)?;
+        }
+        Ok(())
+    }
+
     /// Directory-table row index of directory `n`.
     pub fn dir_index(&self, n: NodeId) -> Result<u32, ArenaError> {
         if !self.flags_raw(n.0)?.contains(Flags::DIR) {

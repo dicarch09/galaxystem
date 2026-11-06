@@ -243,4 +243,22 @@ mod tests {
         assert_eq!(s.count.iter().sum::<u32>(), 1100);
         assert_eq!(a.summary(NodeId(1)), None);
     }
+
+    #[test]
+    fn add_sizes_accumulates_across_threads() {
+        let mut b = ArenaBuilder::new(16).unwrap();
+        let root = b.set_root(b"/r", &rec(b"", Flags::DIR, 4096)).unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..1000 {
+                        b.add_sizes(root, 3, 2).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(b.disk_bytes(root).unwrap(), 4096 + 12_000);
+        assert_eq!(b.apparent_bytes(root).unwrap(), 2048 + 8_000);
+        assert!(b.add_sizes(NodeId(5), 1, 1).is_err());
+    }
 }
