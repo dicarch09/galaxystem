@@ -57,6 +57,20 @@ pub fn governor() -> Option<String> {
     read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
 }
 
+/// Energy-performance preference of CPU 0 (`intel_pstate`/`amd_pstate`
+/// in active mode, where `powerprofilesctl set performance` sets it).
+pub fn energy_preference() -> Option<String> {
+    read_trimmed("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+}
+
+/// Whether the CPU is set for performance as §V2 asks: the `performance`
+/// governor, or the `performance` energy preference of an active pstate
+/// driver (whose governor is then called `powersave`).
+pub fn cpu_in_performance_mode() -> bool {
+    governor().as_deref() == Some("performance")
+        || energy_preference().as_deref() == Some("performance")
+}
+
 /// Whether a mains power supply is online (`None` if there is none, as on
 /// most desktops).
 pub fn on_ac_power() -> Option<bool> {

@@ -318,11 +318,12 @@ pub fn run(cfg: &ScanBench) -> Result<PathBuf, BenchError> {
             "strace no está instalado: no hay conteo de syscalls (`sudo pacman -S strace`)".into(),
         );
     }
-    match env::governor() {
-        Some(g) if g != "performance" => warnings.push(format!(
-            "el governor de CPU es `{g}`, no `performance` (F0-validacion.md §V2)"
-        )),
-        _ => {}
+    if !env::cpu_in_performance_mode() {
+        warnings.push(format!(
+            "la CPU no está en modo performance (governor {}, preferencia {}; F0-validacion.md §V2)",
+            opt(env::governor()),
+            opt(env::energy_preference())
+        ));
     }
     if env::on_ac_power() == Some(false) {
         warnings.push("el equipo no está conectado a la corriente".into());
@@ -428,6 +429,11 @@ pub fn run(cfg: &ScanBench) -> Result<PathBuf, BenchError> {
     let _ = writeln!(md, "| Commit | {} |", opt(env::git_commit()));
     let _ = writeln!(md, "| Kernel | {} |", env::kernel());
     let _ = writeln!(md, "| Governor | {} |", opt(env::governor()));
+    let _ = writeln!(
+        md,
+        "| Preferencia de energía (EPP) | {} |",
+        opt(env::energy_preference())
+    );
     let _ = writeln!(
         md,
         "| Corriente | {} |",
