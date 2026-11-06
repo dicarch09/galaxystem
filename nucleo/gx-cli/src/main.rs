@@ -88,6 +88,9 @@ enum Command {
         #[command(flatten)]
         scan: ScanArgs,
     },
+    /// Mediciones de F0-validacion.md §V2.
+    #[command(subcommand)]
+    Bench(BenchCommand),
     /// Genera un árbol sintético determinista (F0-diseno.md §6).
     Synth {
         /// Perfil: home-dev, fotografo, servidor o patologico.
@@ -111,6 +114,65 @@ enum Command {
         /// Directorio destino (nuevo o vacío).
         dest: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum BenchCommand {
+    /// Mide el escaneo con caché caliente contra dua, gdu y du, y deja
+    /// listos los comandos de caché fría.
+    Scan {
+        /// Árbol a medir.
+        path: PathBuf,
+        /// Nombre del equipo en la ruta de resultados (por defecto, el
+        /// hostname).
+        #[arg(long)]
+        machine: Option<String>,
+        /// Directorio base de resultados.
+        #[arg(long, default_value = "bench/results")]
+        out: PathBuf,
+        /// Corridas medidas por comando.
+        #[arg(long, default_value_t = 10)]
+        runs: u32,
+        /// Corridas de calentamiento por comando.
+        #[arg(long, default_value_t = 3)]
+        warmup: u32,
+        /// Solo imprime los comandos, sin ejecutar nada.
+        #[arg(long)]
+        print_only: bool,
+    },
+    /// Resume uno o más JSON de hyperfine (mediana y p95).
+    Report {
+        /// Archivos `--export-json` de hyperfine.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+}
+
+fn bench(cmd: BenchCommand) -> Result<()> {
+    match cmd {
+        BenchCommand::Scan {
+            path,
+            machine,
+            out,
+            runs,
+            warmup,
+            print_only,
+        } => {
+            let cfg = gx_bench::scan::ScanBench {
+                path,
+                gx: std::env::current_exe().context("no se encontró el binario de gx")?,
+                uring: cfg!(feature = "uring"),
+                machine: machine.unwrap_or_else(gx_bench::env::hostname),
+                out,
+                runs: runs.max(1),
+                warmup,
+                print_only,
+            };
+            gx_bench::scan::run(&cfg)?;
+        }
+        BenchCommand::Report { files } => gx_bench::scan::report(&files)?,
+    }
+    Ok(())
 }
 
 fn human(bytes: u64) -> String {
@@ -208,6 +270,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } else {
             ExitCode::FAILURE
         }),
+        Command::Bench(cmd) => bench(cmd).map(|()| ExitCode::SUCCESS),
         Command::Synth {
             profile,
             files,

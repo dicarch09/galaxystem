@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 gx-arena.workspace = true
+gx-bench.workspace = true
 gx-scan.workspace = true
 gx-synth.workspace = true
 rand_xoshiro.workspace = true
