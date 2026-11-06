@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["nucleo/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+authors = ["Dicarch"]
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+# Release optimizations with full debug info, for profiling (perf, flamegraphs).
+[profile.bench]
+inherits = "release"
+debug = true

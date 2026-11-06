@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Galaxystem artifacts produced locally (snapshots, search indexes, bench output)
+*.gxs
+*.gxi
+/bench/results/
+
+# Fuzzing
+/nucleo/*/fuzz/target/
+/nucleo/*/fuzz/corpus/
+/nucleo/*/fuzz/artifacts/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
