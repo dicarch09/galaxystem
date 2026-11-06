@@ -1,0 +1,9 @@
+[package]
+name = "gx-synth"
+description = "Galaxystem deterministic synthetic tree generator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true

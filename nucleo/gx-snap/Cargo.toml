@@ -1,0 +1,9 @@
+[package]
+name = "gx-snap"
+description = "Galaxystem snapshot format and startup reconciliation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true

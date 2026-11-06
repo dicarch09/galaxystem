@@ -1,0 +1,13 @@
+[package]
+name = "gx-sized"
+description = "Galaxystem privileged size helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "gx-sized"
+path = "src/main.rs"
