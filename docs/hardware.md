@@ -24,7 +24,7 @@ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 | Disco del sistema (modelo, NVMe/SSD) | SAMSUNG MZVL2512HCJQ-00BH1 |
 | Sistema de archivos de `/` y `/home` | Btrfs |
 | Distribución y kernel | CachyOS, 7.1.2-2-cachyos |
-| Perfil de energía al medir | powersave |
+| Perfil de energía al medir |  |
 
 Rol: equipo principal de rendimiento. Corre las mediciones de 1 M, 5 M y 10 M nodos.
 
@@ -37,7 +37,7 @@ Al medir, conectarlo a la corriente y dejarlo enfriar entre series largas. Si ap
 | CPU | Intel Celeron CPU 3955U @ 2.00GHz 400Mhz a 2000Mhz |
 | Núcleos / hilos | 2 |
 | RAM | 3,7GiB |
-| Disco(s) (modelo, HDD/SSD) | HGST HTS545050A7E680: SSD |
+| Disco(s) (modelo, HDD/SSD) | HGST HTS545050A7E680: HDD |
 | Sistema de archivos de `/` y `/home` | ext4 |
 | Distribución y kernel | EndeavourOS, 7.0.11-arch1-1 |
 
