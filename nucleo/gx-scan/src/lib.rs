@@ -130,6 +130,10 @@ pub struct ScanOptions {
     pub progress_interval: Duration,
     /// Maximum number of entries kept in [`ScanStats::error_log`].
     pub max_logged_errors: usize,
+    /// Ignores `stx_mnt_id` even if the kernel reports it, as on kernels or
+    /// emulators without `STATX_MNT_ID`. Only for tests of that fallback.
+    #[doc(hidden)]
+    pub ignore_mnt_id: bool,
 }
 
 impl Default for ScanOptions {
@@ -144,6 +148,7 @@ impl Default for ScanOptions {
             getdents_buffer: 256 * 1024,
             progress_interval: Duration::from_millis(50),
             max_logged_errors: 10_000,
+            ignore_mnt_id: false,
         }
     }
 }

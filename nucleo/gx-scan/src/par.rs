@@ -78,7 +78,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone, Copy, Debug)]
 struct Task {
     node: NodeId,
-    /// `stx_mnt_id`, or 0 when the kernel did not report it.
+    /// Mount id: `stx_mnt_id`, or without `STATX_MNT_ID` the one found in
+    /// mountinfo by path (0 if not found).
     mnt_id: u64,
     /// `makedev(stx_dev_major, stx_dev_minor)`.
     devnum: u64,
@@ -437,9 +438,7 @@ impl Ctx<'_> {
     }
 
     fn pool_key(&self, mnt_id: u64, devnum: u64) -> (u32, u32) {
-        if self.has_mnt_id
-            && let Some(e) = self.mounts.get(mnt_id)
-        {
+        if let Some(e) = self.mounts.get(mnt_id) {
             return (e.major, e.minor);
         }
         (rustix::fs::major(devnum), rustix::fs::minor(devnum))
@@ -1064,13 +1063,24 @@ impl Local {
             }
         }
 
-        let mnt_id = if ctx.has_mnt_id { s.stx_mnt_id } else { 0 };
+        let mnt_id = if ctx.has_mnt_id {
+            s.stx_mnt_id
+        } else if dn != parent.devnum {
+            // Without `STATX_MNT_ID` a device change is compared against
+            // mountinfo (F0-diseno.md §2.1): a mount if one is mounted at
+            // this path, a btrfs subvolume otherwise.
+            ctx.mounts
+                .mount_of(&self.child_path(name))
+                .unwrap_or(parent.mnt_id)
+        } else {
+            parent.mnt_id
+        };
         let mut descend = ft == FileType::Directory;
         let mut boundary = false;
         let mut new_mount = false;
         let mut net = parent.net;
         if descend {
-            new_mount = ctx.has_mnt_id && mnt_id != parent.mnt_id;
+            new_mount = mnt_id != parent.mnt_id;
             if new_mount {
                 flags |= Flags::MOUNT_POINT;
                 self.stats.mount_points += 1;
@@ -1101,8 +1111,8 @@ impl Local {
                 let (i, new) = b.add_device(
                     Device {
                         dev: dn,
-                        mnt_id: s.stx_mnt_id,
-                        rotational: ctx.mounts.rotational(s.stx_mnt_id),
+                        mnt_id,
+                        rotational: ctx.mounts.rotational(mnt_id),
                         mount_node: u32::MAX,
                         ..Device::default()
                     },
@@ -1204,22 +1214,32 @@ pub(crate) fn run(
         return Err(ScanError::RootNotDirectory(canon));
     }
     let root_path = canon.as_os_str().as_bytes().to_vec();
-    let has_mnt_id = StatxFlags::from_bits_retain(stx.stx_mask).contains(StatxFlags::MNT_ID);
     let mounts = MountTable::load();
+    let has_mnt_id = !opts.ignore_mnt_id
+        && mounts.trusts_mnt_id(
+            StatxFlags::from_bits_retain(stx.stx_mask)
+                .contains(StatxFlags::MNT_ID)
+                .then_some(stx.stx_mnt_id),
+        );
+    let root_mnt = if has_mnt_id {
+        stx.stx_mnt_id
+    } else {
+        mounts.mount_of(&root_path).unwrap_or(0)
+    };
 
     let mut b = ArenaBuilder::new(opts.node_capacity)?;
     let dn = devnum(&stx);
     let (dev, _) = b.add_device(
         Device {
             dev: dn,
-            mnt_id: stx.stx_mnt_id,
-            rotational: mounts.rotational(stx.stx_mnt_id),
+            mnt_id: root_mnt,
+            rotational: mounts.rotational(root_mnt),
             mount_node: 0,
             ..Device::default()
         },
         &root_path,
     )?;
-    let net = has_mnt_id && mounts.is_network(stx.stx_mnt_id);
+    let net = mounts.is_network(root_mnt);
     let mut flags = Flags::DIR;
     if net {
         flags |= Flags::NET_FS;
@@ -1259,7 +1279,7 @@ pub(crate) fn run(
         net_mount_parents,
         hardlinks: HardlinkSet::new(),
         root_path,
-        root_mnt: stx.stx_mnt_id,
+        root_mnt,
         has_mnt_id,
         start,
         tasks: CachePadded::new(AtomicUsize::new(1)),
@@ -1274,7 +1294,7 @@ pub(crate) fn run(
     };
     let root_task = Task {
         node: root_node,
-        mnt_id: stx.stx_mnt_id,
+        mnt_id: root_mnt,
         devnum: dn,
         boundary: true,
         net,

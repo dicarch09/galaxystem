@@ -12,6 +12,11 @@
 //! which leaves the reading thread blocked in the kernel. At the end they
 //! are answered with `EIO` so the abandoned helper can exit, and the mount
 //! is detached. Without `/dev/fuse` or `fusermount3` the test is skipped.
+//!
+//! The scenario also runs ignoring `stx_mnt_id`, as on kernels or emulators
+//! without a usable `STATX_MNT_ID` (qemu-user 10.2 sets the bit without a
+//! valid id): mounts must then be found through mountinfo, or the mount is
+//! read by a local thread with no timeout and the scan never ends.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -82,6 +87,15 @@ fn fuse_available() -> bool {
 
 #[test]
 fn hung_network_mount_is_stale_and_the_rest_is_complete() {
+    hung_mount_scenario(false);
+}
+
+#[test]
+fn hung_network_mount_without_statx_mnt_id() {
+    hung_mount_scenario(true);
+}
+
+fn hung_mount_scenario(ignore_mnt_id: bool) {
     if !fuse_available() {
         eprintln!("AVISO: prueba omitida: no hay /dev/fuse o fusermount3");
         return;
@@ -122,6 +136,7 @@ fn hung_network_mount_is_stale_and_the_rest_is_complete() {
     let opts = ScanOptions {
         mode: ScanMode::Parallel,
         net_timeout: timeout,
+        ignore_mnt_id,
         ..ScanOptions::default()
     };
     let start = Instant::now();
@@ -160,6 +175,7 @@ fn hung_network_mount_is_stale_and_the_rest_is_complete() {
         &report.root,
         &ScanOptions {
             mode: ScanMode::Sequential,
+            ignore_mnt_id,
             ..ScanOptions::default()
         },
         &NoProgress,

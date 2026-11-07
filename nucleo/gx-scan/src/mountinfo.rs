@@ -166,6 +166,33 @@ impl MountTable {
         self.by_id.get(&id).map(|&i| &self.entries[i])
     }
 
+    /// Mount that contains the absolute, canonical `path`: the one with the
+    /// deepest mount point that is `path` or one of its ancestors, and among
+    /// mounts on the same point the last one in the table (the one on top).
+    ///
+    /// Used to find mount ids when `statx` does not report `STATX_MNT_ID`
+    /// (F0-diseno.md §2.1).
+    pub fn mount_of(&self, path: &[u8]) -> Option<u64> {
+        let mut best: Option<&MountEntry> = None;
+        for e in &self.entries {
+            if is_ancestor_or_equal(&e.mount_point, path)
+                && best.is_none_or(|b| e.mount_point.len() >= b.mount_point.len())
+            {
+                best = Some(e);
+            }
+        }
+        best.map(|e| e.id)
+    }
+
+    /// Whether the `stx_mnt_id` values of a scan can be trusted, given the
+    /// one of its root: `reported` is `None` when `stx_mask` lacks
+    /// `STATX_MNT_ID`. Some emulators (qemu-user 10.2) set the bit without a
+    /// valid id, so the id must also be in the table. With an empty table
+    /// there is nothing to compare with and the bit is trusted.
+    pub fn trusts_mnt_id(&self, reported: Option<u64>) -> bool {
+        reported.is_some_and(|id| self.entries.is_empty() || self.get(id).is_some())
+    }
+
     /// Whether mount `id` is a network filesystem by its type.
     pub fn is_network(&self, id: u64) -> bool {
         self.get(id)
@@ -278,6 +305,41 @@ bad line
         assert!(t.is_bind_alias(34, b"/tmp/x", 33));
         // Scanning /tmp/y: /x/a is outside the indexed region /y.
         assert!(!t.is_bind_alias(34, b"/tmp/y", 33));
+    }
+
+    #[test]
+    fn mount_of_path() {
+        let t = MountTable::parse(SAMPLE);
+        assert_eq!(t.mount_of(b"/"), Some(25));
+        assert_eq!(t.mount_of(b"/etc/fstab"), Some(25));
+        assert_eq!(t.mount_of(b"/home"), Some(26));
+        assert_eq!(t.mount_of(b"/home/u/bind/x"), Some(30));
+        assert_eq!(t.mount_of(b"/home/u/binder"), Some(26));
+        assert_eq!(t.mount_of(b"/mnt/my disk"), Some(32));
+        assert_eq!(t.mount_of(b"/mnt/nas/a/b"), Some(31));
+        // Two mounts on the same point: the later one is on top.
+        let stacked = MountTable::parse(
+            b"\
+1 0 0:1 / / rw - ext4 /dev/sda1 rw
+2 1 0:2 / /mnt rw - tmpfs tmpfs rw
+3 1 0:3 / /mnt rw - tmpfs tmpfs rw
+",
+        );
+        assert_eq!(stacked.mount_of(b"/mnt/a"), Some(3));
+        assert_eq!(MountTable::default().mount_of(b"/"), None);
+    }
+
+    #[test]
+    fn mnt_id_trust() {
+        let t = MountTable::parse(SAMPLE);
+        assert!(t.trusts_mnt_id(Some(26)));
+        // The bit is set but the field was not filled in.
+        assert!(!t.trusts_mnt_id(Some(0)));
+        assert!(!t.trusts_mnt_id(Some(99)));
+        assert!(!t.trusts_mnt_id(None));
+        // Without a mount table the bit is all there is.
+        assert!(MountTable::default().trusts_mnt_id(Some(0)));
+        assert!(!MountTable::default().trusts_mnt_id(None));
     }
 
     #[test]

@@ -37,7 +37,8 @@ pub(crate) const BTRFS_SUBVOL_INO: u64 = 256;
 #[derive(Clone, Copy)]
 struct Pending {
     node: NodeId,
-    /// `stx_mnt_id`, or 0 when the kernel did not report it.
+    /// Mount id: `stx_mnt_id`, or without `STATX_MNT_ID` the one found in
+    /// mountinfo by path (0 if not found).
     mnt_id: u64,
     /// `makedev(stx_dev_major, stx_dev_minor)`.
     devnum: u64,
@@ -148,7 +149,18 @@ pub(crate) fn run(
         return Err(ScanError::RootNotDirectory(canon));
     }
     let root_bytes = canon.as_os_str().as_bytes().to_vec();
-    let has_mnt_id = StatxFlags::from_bits_retain(stx.stx_mask).contains(StatxFlags::MNT_ID);
+    let mounts = MountTable::load();
+    let has_mnt_id = !opts.ignore_mnt_id
+        && mounts.trusts_mnt_id(
+            StatxFlags::from_bits_retain(stx.stx_mask)
+                .contains(StatxFlags::MNT_ID)
+                .then_some(stx.stx_mnt_id),
+        );
+    let root_mnt = if has_mnt_id {
+        stx.stx_mnt_id
+    } else {
+        mounts.mount_of(&root_bytes).unwrap_or(0)
+    };
 
     let b = ArenaBuilder::new(opts.node_capacity)?;
     let mut w = Walker {
@@ -163,8 +175,8 @@ pub(crate) fn run(
         b,
         queue: VecDeque::new(),
         hardlinks: HashSet::new(),
-        mounts: MountTable::load(),
-        root_mnt: stx.stx_mnt_id,
+        mounts,
+        root_mnt,
         has_mnt_id,
         start,
         last_progress: start,
@@ -200,15 +212,15 @@ impl Walker<'_> {
         let (dev, _) = self.b.add_device(
             Device {
                 dev: dn,
-                mnt_id: stx.stx_mnt_id,
-                rotational: self.mounts.rotational(stx.stx_mnt_id),
+                mnt_id: self.root_mnt,
+                rotational: self.mounts.rotational(self.root_mnt),
                 mount_node: 0,
                 ..Device::default()
             },
             path,
         )?;
         let mut flags = Flags::DIR;
-        let net = self.has_mnt_id && self.mounts.is_network(stx.stx_mnt_id);
+        let net = self.mounts.is_network(self.root_mnt);
         if net {
             flags |= Flags::NET_FS;
         }
@@ -233,7 +245,7 @@ impl Walker<'_> {
         self.stats.dirs += 1;
         self.queue.push_back(Pending {
             node: root,
-            mnt_id: stx.stx_mnt_id,
+            mnt_id: self.root_mnt,
             devnum: dn,
             boundary: true,
             net,
@@ -479,12 +491,23 @@ impl Walker<'_> {
             }
         }
 
-        let mnt_id = if self.has_mnt_id { s.stx_mnt_id } else { 0 };
+        let mnt_id = if self.has_mnt_id {
+            s.stx_mnt_id
+        } else if dn != parent.devnum {
+            // Without `STATX_MNT_ID` a device change is compared against
+            // mountinfo (F0-diseno.md §2.1): a mount if one is mounted at
+            // this path, a btrfs subvolume otherwise.
+            self.mounts
+                .mount_of(&self.child_path(name))
+                .unwrap_or(parent.mnt_id)
+        } else {
+            parent.mnt_id
+        };
         let mut descend = ft == FileType::Directory;
         let mut boundary = false;
         let mut net = parent.net;
         if descend {
-            let new_mount = self.has_mnt_id && mnt_id != parent.mnt_id;
+            let new_mount = mnt_id != parent.mnt_id;
             if new_mount {
                 flags |= Flags::MOUNT_POINT;
                 self.stats.mount_points += 1;
@@ -515,8 +538,8 @@ impl Walker<'_> {
                 let (i, _) = self.b.add_device(
                     Device {
                         dev: dn,
-                        mnt_id: s.stx_mnt_id,
-                        rotational: self.mounts.rotational(s.stx_mnt_id),
+                        mnt_id,
+                        rotational: self.mounts.rotational(mnt_id),
                         mount_node: u32::MAX,
                         ..Device::default()
                     },
