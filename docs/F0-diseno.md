@@ -174,12 +174,31 @@ Por cada carpeta:
   
   `getdents64` sigue siendo síncrono en ambos casos, porque no está disponible en io_uring del kernel principal. Gana la variante con mejores números en el benchmark de §F0.2.
 
+  **Decisión de la F0.2:** gana **A, `statx` síncrono**, que es el valor por defecto. Con caché caliente gana en los dos equipos (Victus: 319 frente a 420 ms; PC antiguo: 3,08 frente a 3,90 s). Con caché fría en la Victus, B fue un 5 % más rápido (1431 frente a 1512 ms). B queda disponible detrás de la feature `uring` y de `--statx uring`.
+
 ### §2.3 Agregación concurrente (F0.2)
 
 - Columnas transitorias (no van al snapshot): `pending: AtomicU32` por carpeta (hijos directorio sin terminar + 1 por sus propias entradas) y acumuladores `AtomicU64` de disco y aparente.
 - **Al terminar las entradas de una carpeta:** se suman los archivos que aportan al acumulador y se decrementa `pending`.
 - **Cuando `pending` llega a 0:** la carpeta escribe su total, lo suma al acumulador del padre y decrementa el `pending` del padre. La propagación sigue hacia arriba.
 - **Los totales parciales son visibles** mientras tanto. Eso es lo que permite el escaneo progresivo.
+
+**Cómo quedó implementado en la F0.2.** El escáner paralelo se aparta de lo anterior y de §2.2 en estos puntos, aprobados al cerrar la subfase:
+
+- **Sin acumuladores aparte.** Cada carpeta acumula directamente en sus propias columnas `disk_bytes` y `apparent_bytes`, que son atómicas durante el escaneo y empiezan con los bloques propios de la carpeta. La única columna transitoria es `pending`. Así se ahorran 16 B por carpeta y la copia final, y los totales parciales se siguen viendo.
+- **Pools que crecen.** Cada pool empieza con un hilo y crece hasta el límite de la tabla de §2.2 mientras sus hilos tengan trabajo en cola. Un montaje con pocas carpetas no lanza hilos que no va a usar.
+- **Un pool por sistema de archivos, no por `st_dev`.** La clave del pool es el `major:minor` que `mountinfo` da para el montaje, así que los subvolúmenes btrfs de un mismo sistema de archivos comparten pool.
+- **Tareas con metadatos.** Una tarea no es solo un `NodeId`: también lleva el `mnt_id`, el `devnum`, si es frontera, si es de red y el inode, para no tener que volver a consultarlos.
+- **Red.**
+  - Las carpetas de un sistema de archivos de red las lee un hilo ayudante desechable, que no comparte datos con el escáner y al que se espera con timeout. Si no responde, se abandona y la carpeta queda `STALE`.
+  - Cada montaje abandona como máximo 4 ayudantes (`max_abandoned`); después, el resto de ese montaje se marca `STALE` sin tocarlo.
+  - El `statx` de un punto de montaje de red, visto desde una carpeta local, también se hace en un ayudante con timeout.
+  - El pool de red usa 4 hilos por defecto.
+- **I7 durante el escaneo.** Los ids y los nombres se reservan con dos `fetch_add` distintos, así que en el arena en memoria `name_off` no crece con el id. I7 vale solo para el snapshot: el escritor de la F0.3 reescribe el buffer de nombres en orden de id (§3.1).
+- **Sin un `STATX_MNT_ID` usable** (§2.1).
+  - El `mnt_id` de la raíz se usa solo si el bit viene en `stx_mask` y el id existe en `mountinfo`.
+  - Si no, un cambio de `st_dev` se busca por ruta en `mountinfo`: si hay un montaje en esa ruta, es un montaje con ese id; si no, es una frontera de dispositivo.
+  - Hace falta porque qemu-user 10.2, que usa la CI, marca el bit sin dar un id válido.
 
 ### §2.4 Fronteras
 
