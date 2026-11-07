@@ -65,49 +65,42 @@ Los resultados quedan en `bench/results/pc-antiguo/<fecha>/`, con un `resumen.md
 
 ## 7. Medición con caché fría
 
-La primera medición (2026-11-06) salió inválida: gx-sync marcó 13, 33 y 372 ms con 14 MB de RAM, cuando en caliente tarda 3 s con 132 MB, y dua no terminó por falta de tiempo. Por eso ahora se comprueba cada paso antes de seguir y se miden solo tres herramientas.
+**Por qué cambió este paso.** Las dos mediciones frías con hyperfine (2026-11-06 y 2026-11-07) salieron inválidas por cómo llegó el comando, no por gx. El comando de varias líneas se pegó unido en una sola, con las `\` adentro. Cada `\ ` llegó a hyperfine como un comando que es solo un espacio: terminaba al instante y se llevaba el nombre `-n` de la herramienta siguiente. Lo que parecía "dua" o "du" sin terminar era gx-sync en frío.
 
-1. Traer los cambios y comprobar la energía (paso 5.4). El primer valor debe ser `1` y el segundo `performance`:
+En su lugar, `bench/fria.sh` corre una herramienta a la vez:
+- limpia la caché antes de cada corrida;
+- mide con `/usr/bin/time -v`;
+- guarda la salida completa de cada corrida;
+- mantiene viva la contraseña de sudo mientras dura.
+
+Todos los comandos de este paso son de **una sola línea**.
+
+1. Traer los cambios y recompilar (el escáner cambió en `da99cfb`):
    ```sh
    git pull
+   ```
+   ```sh
+   cargo build --release -p gx-cli --features uring
+   ```
+2. Comprobar la energía (paso 5.4). El primer valor debe ser `1` y el segundo `performance`:
+   ```sh
    cat /sys/class/power_supply/*/online /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
    ```
-   El código del escáner no cambió desde `e636574`, así que no hace falta recompilar.
-2. Exactitud en ext4. Debe terminar con todo coincidiendo; si muestra diferencias, guardar la salida completa:
+3. Correr la medición. Pide la contraseña de sudo una vez:
    ```sh
-   target/release/gx verify-du ~/gx-arboles/home-dev-1m
+   sh bench/fria.sh ~/gx-arboles/home-dev-1m bench/results/pc-antiguo/2026-11-07
    ```
-3. Dejar la contraseña de sudo en caché, para que hyperfine no se trabe pidiéndola:
+   - Mide, en este orden y una vez cada uno: gx-sync, du, gx-uring y gx con 1 hilo. Con unos 21 min por corrida, son **más o menos 1 h 30 min**. No hace falta mirarlo: cada corrida imprime su tiempo y su RAM al terminar.
+   - En cada corrida de gx, la línea `Nodos:` debe decir **1140500**. Si dice otra cosa, guardar la salida y avisar.
+   - Si hay que cortarlo, Ctrl+C. Lo ya medido queda guardado.
+4. Opcional, solo si sobra tiempo: dua y gdu en frío no bloquean ninguna decisión. Si se quieren, una corrida de cada uno a mano, después de limpiar la caché:
    ```sh
-   sudo -v
+   sync; echo 3 | sudo tee /proc/sys/vm/drop_caches; /usr/bin/time -v dua aggregate ~/gx-arboles/home-dev-1m
    ```
-4. Escaneo de prueba en frío. Anotar el tiempo total y comprobar que `Nodos:` dice **1140500**:
-   ```sh
-   sync; echo 3 | sudo tee /proc/sys/vm/drop_caches; target/release/gx scan ~/gx-arboles/home-dev-1m
-   ```
-   **Si dice muchos menos nodos, detenerse** y guardar la salida completa, sobre todo la línea `Incidencias:`. Eso explicaría la medición inválida anterior.
-5. Hyperfine con gx-sync, gx-uring y du, 3 corridas cada uno. Cada corrida en frío dura más o menos lo que el escaneo de prueba (du, probablemente más), así que conviene reservar al menos 10 veces ese tiempo:
-   ```sh
-   hyperfine --prepare 'sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' --runs 3 \
-       --export-json bench/results/pc-antiguo/2026-11-06/scan-fria-2.json \
-       -n gx-sync  'target/release/gx scan ~/gx-arboles/home-dev-1m' \
-       -n gx-uring 'target/release/gx scan ~/gx-arboles/home-dev-1m --statx uring' \
-       -n du       'du -s -x ~/gx-arboles/home-dev-1m'
-   ```
-   Si sudo vuelve a pedir contraseña a mitad de camino (su caché dura unos 5 minutos por defecto), repetir `sudo -v` en otra terminal.
-6. Resumir el JSON:
-   ```sh
-   target/release/gx bench report bench/results/pc-antiguo/2026-11-06/scan-fria-2.json
-   ```
-7. Tiempo hasta los primeros 10 000 nodos. Repetir 5 veces y anotar los 5 números entre paréntesis (`primeros 10.000 nodos: X ms`):
-   ```sh
-   sync; echo 3 | sudo tee /proc/sys/vm/drop_caches; target/release/gx scan ~/gx-arboles/home-dev-1m | grep Tiempo
-   ```
-8. Opcional, solo si sobra tiempo: dua y gdu en frío, en una corrida aparte con `--runs 1`. Son los lentos y no bloquean ninguna decisión.
 
 ## 8. Entregar los resultados
 
-Desde el 2026-11-06, `bench/results/` ya no está en `.gitignore`. Anotar en `bench/results/pc-antiguo/2026-11-06/notas.md` lo que no queda en archivos: el resultado de `verify-du`, la salida del escaneo de prueba y los 5 tiempos hasta 10 000 nodos. Después:
+Desde el 2026-11-06, `bench/results/` ya no está en `.gitignore`. `bench/fria.sh` deja todo en archivos. En `bench/results/pc-antiguo/2026-11-07/notas.md` anotar solo lo que no quede ahí, por ejemplo si se cortó o se usó la máquina durante la medición. Después:
 
 ```sh
 git add bench/results/pc-antiguo
