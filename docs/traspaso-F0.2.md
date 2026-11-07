@@ -21,7 +21,7 @@ Este documento reemplaza al traspaso anterior (el de mitad de implementación) y
 
 ## Pendiente de Ricardo
 
-1. **PC antiguo:** caché caliente medida (ver abajo). Falta repetir la caché fría, que salió inválida, y anotar la mediana fría hasta 10 000 nodos.
+1. **PC antiguo:** caché caliente medida (ver abajo). Falta repetir la caché fría, que salió inválida, anotar la mediana fría hasta 10 000 nodos y repetir `gx verify-du ~/gx-arboles/home-dev-1m` (no se sabe si pasó; es la primera verificación de exactitud en ext4).
 2. **Victus, repetir el tiempo frío hasta 10 000 nodos.** Los 105,2 ms (y los 2,18 s de total) se midieron **a batería**, con la preferencia de energía en `balance_power`, y no valen. Con el cargador conectado:
    ```sh
    powerprofilesctl set performance
