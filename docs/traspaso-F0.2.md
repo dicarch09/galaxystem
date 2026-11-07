@@ -21,7 +21,7 @@ Este documento reemplaza al traspaso anterior (el de mitad de implementación) y
 
 ## Pendiente de Ricardo
 
-1. **PC antiguo:** va en el paso 4 de `docs/medicion-pc-antiguo.md` (generar el árbol y `verify-du`). Al terminar, copiar `bench/results/pc-antiguo/` a la Victus y anotar las medianas tomadas a mano.
+1. **PC antiguo:** caché caliente medida (ver abajo). Falta repetir la caché fría, que salió inválida, y anotar la mediana fría hasta 10 000 nodos.
 2. **Victus, repetir el tiempo frío hasta 10 000 nodos.** Los 105,2 ms (y los 2,18 s de total) se midieron **a batería**, con la preferencia de energía en `balance_power`, y no valen. Con el cargador conectado:
    ```sh
    powerprofilesctl set performance
@@ -58,9 +58,24 @@ Este documento reemplaza al traspaso anterior (el de mitad de implementación) y
 2. **uring o sync por defecto:** esperar los datos del HDD. En la Victus gana sync con caché caliente (319 frente a 420 ms) y uring con caché fría (1431 frente a 1512 ms).
 3. **Desviaciones del diseño** (acumuladores en las columnas de tamaño, pools que empiezan con un hilo, tareas con metadatos, pools de red, I7): ¿documentarlas en §2.3 de `F0-diseno.md` o en un ADR?
 
+## Mediciones en el PC antiguo (`home-dev` 1 M, ext4 en HDD, Celeron de 2 núcleos)
+
+Llegaron en `c9baa60` (`bench/results/pc-antiguo/2026-11-06/`, commit `e636574`, kernel 7.0.11, `performance`, con cargador).
+
+| | gx sync | gx uring | dua 3.0.0 | gdu 5.37.0 | du 9.11 |
+|---|---|---|---|---|---|
+| Caliente, mediana | **3081 ms** | 3901 ms | 8510 ms | 4706 ms | 6378 ms |
+| Caliente, p95 | 3222 ms | 4004 ms | 8719 ms | 4908 ms | 6442 ms |
+| RAM máxima | 116,8 MiB | 210,1 MiB | 16,3 MiB | 63,2 MiB | 35,1 MiB |
+| Hasta 10 000 nodos (caliente, mediana) | 24,1 ms | 31,7 ms | | | |
+
+**Caché fría: no válida.** `scan-fria.json` solo trae gx-sync, con 13, 33 y 372 ms, 0,06 ms de CPU de usuario y 14 MB de RAM, frente a 3 s y 132 MB en caliente. No puede ser un escaneo de 1,14 M nodos; lo más probable es que gx no haya recorrido el árbol en esas corridas (causa sin confirmar). dua no terminó por falta de tiempo y el resto no se corrió. Falta también el tiempo frío hasta 10 000 nodos.
+
+Para repetirla: primero un `gx scan` a mano tras `drop_caches`, comprobando que reporta ~1 140 500 nodos, y después el hyperfine de `resumen.md`. La caché fría en el HDD es lenta: conviene dejarla corriendo con tiempo de sobra o una herramienta a la vez.
+
 ## Mediciones en la Victus (`home-dev` 1 M, btrfs en NVMe, con cargador y `performance`)
 
-Los resultados completos están en `bench/results/victus/2026-11-06-3/`, que está en `.gitignore`. `2026-11-06-4` es una corrida más de la Victus, guardada antes por error con la etiqueta `pc-antiguo`.
+Los resultados completos están en `bench/results/victus/2026-11-06-3/`. Desde el 2026-11-06 `bench/results/` ya no está en `.gitignore` y se sube al repo, que pasa a ser privado. `2026-11-06-4` es una corrida más de la Victus, guardada antes por error con la etiqueta `pc-antiguo`.
 
 | | gx sync | gx uring | dua 3.0.0 | gdu 5.38.0 | du 9.12 |
 |---|---|---|---|---|---|
