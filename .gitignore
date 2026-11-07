@@ -3,10 +3,9 @@
 **/*.rs.bk
 *.pdb
 
-# Galaxystem artifacts produced locally (snapshots, search indexes, bench output)
+# Galaxystem artifacts produced locally (snapshots, search indexes)
 *.gxs
 *.gxi
-/bench/results/
 
 # Fuzzing
 /nucleo/*/fuzz/target/
